@@ -127,6 +127,71 @@ function useStorage(key, def) {
   return [val, set];
 }
 
+// ── Google Sheets Sync ────────────────────────────────────
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzofUFNzOAUO6lRZBw_9yVCd1qmDT0brb0Ylf-bJSff7EZ2qosvs7oxHOc0Qch-fgHg/exec";
+
+function getSegmentTimeFn(taps, fromKeys, toKeys) {
+  const fromTs = fromKeys.map(k => taps[k]).filter(Boolean);
+  const toTs = toKeys.map(k => taps[k]).filter(Boolean);
+  if (!fromTs.length || !toTs.length) return null;
+  return Math.min(...toTs) - Math.min(...fromTs);
+}
+
+async function syncToSheets(ddSessions, fzSessions, dockSessions) {
+  const allPallets = [
+    ...ddSessions.flatMap(s => s.pallets.map(p => ({ ...p, side: "DD", condition: s.condition, sessionId: s.id, offlineEquip: s.offline || {} }))),
+    ...fzSessions.flatMap(s => s.pallets.map(p => ({ ...p, side: "FZ", condition: s.condition, sessionId: s.id, offlineEquip: s.offline || {} }))),
+  ];
+
+  const palletRows = allPallets.map(p => {
+    const taps = p.taps || {};
+    const vals = Object.values(taps);
+    const totalMs = vals.length >= 2 ? Math.max(...vals) - Math.min(...vals) : null;
+    const side = p.side;
+    const segs = side === "DD" ? DD_SEGMENTS : FZ_SEGMENTS;
+    const segTimes = segs.map(seg => {
+      const st = getSegmentTimeFn(taps, seg.from, seg.to);
+      return st ? (st / 60000).toFixed(3) : "";
+    });
+    const fmtTs = (k) => taps[k] ? new Date(taps[k]).toISOString() : "";
+    const offlineList = Object.entries(p.offlineEquip || {}).filter(e => e[1]).map(e => e[0]).join("; ");
+    return [
+      p.id || "", p.side || "", p.condition || "", p.sessionId || "",
+      p.srmNumber || "",
+      p.coldChainFlag ? "YES" : "NO",
+      p.coldChainFlag ? (p.coldChainFlag.reason || "") : "",
+      p.rejected ? "YES" : "NO",
+      totalMs ? (totalMs / 60000).toFixed(3) : "",
+      fmtTs("floor"), fmtTs("sg4300"), fmtTs("sg4100"), fmtTs("sg1300"), fmtTs("sg1100"),
+      fmtTs("amtu4300"), fmtTs("amtu4100"), fmtTs("amtu1300"), fmtTs("amtu1100"),
+      fmtTs("dd_conformity") || fmtTs("fz_conformity"),
+      fmtTs("vl4800"), fmtTs("vl4700"), fmtTs("vl1800"), fmtTs("vl1700"),
+      fmtTs("sc5800"), fmtTs("sc5700"), fmtTs("sc2800"), fmtTs("sc2700"),
+      fmtTs("srm"),
+      ...segTimes,
+      offlineList,
+    ];
+  });
+
+  const dockRows = dockSessions.map(s => [
+    s.id || "", s.meta?.side || "", s.meta?.door || "", s.meta?.people || "",
+    s.mode || "", s.palletCount || "",
+    s.sessionElapsed ? (s.sessionElapsed / 60000).toFixed(2) : "",
+    s.manHrsTotal ? s.manHrsTotal.toFixed(3) : "",
+    s.manHrsPerPallet ? s.manHrsPerPallet.toFixed(3) : "",
+    s.meta?.desc || "",
+    s.ts ? new Date(s.ts).toISOString() : "",
+  ]);
+
+  const results = await Promise.all([
+    fetch(APPS_SCRIPT_URL, { method: "POST", body: JSON.stringify({ type: "pallets", rows: palletRows }) }),
+    fetch(APPS_SCRIPT_URL, { method: "POST", body: JSON.stringify({ type: "dock", rows: dockRows }) }),
+  ]);
+  return results.every(r => r.ok);
+}
+
+
+
 // ── UI Components ─────────────────────────────────────────
 function LiveTimer({ startTs }) {
   const [now, setNow] = useState(Date.now());
@@ -668,10 +733,38 @@ function HistoryTab() {
 
 // ── Settings Tab ──────────────────────────────────────────
 function SettingsTab({ settings, setSettings }) {
+  const [ddSessions] = useStorage("sessions_DD", []);
+  const [fzSessions] = useStorage("sessions_FZ", []);
+  const [dockSessions] = useStorage("dock_sessions", []);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncStatus(null);
+    try {
+      const ok = await syncToSheets(ddSessions, fzSessions, dockSessions);
+      setSyncStatus(ok ? "success" : "error");
+    } catch(e) {
+      setSyncStatus("error");
+    }
+    setSyncing(false);
+  };
+
   const inp = { width: "100%", background: CARD, border: `1px solid ${BORDER}`, color: TEXT, fontFamily: "inherit", fontSize: 13, padding: "10px 12px", borderRadius: 6, outline: "none", marginBottom: 12, boxSizing: "border-box" };
   const lbl = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: MUTED, display: "block", marginBottom: 6 };
   return <div>
-    <SLabel mt={4}>User & System</SLabel>
+    <SLabel mt={4}>Google Sheets Sync</SLabel>
+    <div style={{ background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
+      <div style={{ fontSize: 12, color: MUTED, marginBottom: 10 }}>Pushes all session data to your TOC Jonah Edition sheet in Google Drive.</div>
+      <Btn variant="primary" onClick={handleSync} disabled={syncing} style={{ marginBottom: 6 }}>
+        {syncing ? "Syncing..." : "Sync to Google Drive"}
+      </Btn>
+      {syncStatus === "success" && <div style={{ fontSize: 12, color: GREEN, marginTop: 4 }}>✓ Synced successfully to Google Drive</div>}
+      {syncStatus === "error" && <div style={{ fontSize: 12, color: RED, marginTop: 4 }}>✗ Sync failed — check your connection and try again</div>}
+    </div>
+    <Hr />
+    <SLabel>User & System</SLabel>
     {[
       { key: "userId",        label: "User ID",                    placeholder: "Your ID or code" },
       { key: "coldChainMins", label: "Cold Chain Threshold (min)", placeholder: "30", type: "number" },
@@ -684,190 +777,250 @@ function SettingsTab({ settings, setSettings }) {
     <SLabel>Design Rates — Freezer (pallets/hr)</SLabel>
     {CONDITIONS.map(c => <div key={"fz_"+c}><label style={lbl}>{c}</label><input style={inp} type="number" placeholder="Not set — pending manufacturer data" value={settings["fz_rate_"+c] || ""} onChange={e => setSettings(p => ({ ...p, ["fz_rate_"+c]: e.target.value }))} /></div>)}
     <Hr />
-    <div style={{ fontSize: 11, color: FAINT, textAlign: "center" }}>TOC Jonah · The Jonah Edition v3.0 · Local storage · Google Sheets sync coming</div>
+    <div style={{ fontSize: 11, color: FAINT, textAlign: "center" }}>TOC - Jonah Edition v3.0 · Local storage · Google Sheets sync coming</div>
     <div style={{ height: 24 }} />
   </div>;
 }
 
 
 // ── Summary Tab ───────────────────────────────────────────
-function SummaryTab() {
-  const [ddSessions] = useStorage('sessions_DD', []);
-  const [fzSessions] = useStorage('sessions_FZ', []);
-  const [dockSessions] = useStorage('dock_sessions', []);
+// Segment order for display — defines the bottleneck flow
+const DD_SEGMENTS = [
+  { key: "floor->sg",         label: "Floor → SG",         from: ["floor"],                          to: ["sg4300","sg4100"] },
+  { key: "sg->amtu",          label: "SG → AMTU",           from: ["sg4300","sg4100"],                to: ["amtu4300","amtu4100"] },
+  { key: "amtu->conformity",  label: "AMTU → Conformity",   from: ["amtu4300","amtu4100"],            to: ["dd_conformity"] },
+  { key: "conformity->vl",    label: "Conformity → VL",     from: ["dd_conformity"],                  to: ["vl4800","vl4700"] },
+  { key: "vl->sc",            label: "VL → SC",             from: ["vl4800","vl4700"],                to: ["sc5800","sc5700"] },
+  { key: "sc->srm",           label: "SC → SRM",            from: ["sc5800","sc5700"],                to: ["srm"] },
+];
+const FZ_SEGMENTS = [
+  { key: "floor->sg",         label: "Floor → SG",         from: ["floor"],                          to: ["sg1300","sg1100"] },
+  { key: "sg->amtu",          label: "SG → AMTU",           from: ["sg1300","sg1100"],                to: ["amtu1300","amtu1100"] },
+  { key: "amtu->conformity",  label: "AMTU → Conformity",   from: ["amtu1300","amtu1100"],            to: ["fz_conformity"] },
+  { key: "conformity->vl",    label: "Conformity → VL",     from: ["fz_conformity"],                  to: ["vl1800","vl1700"] },
+  { key: "vl->sc",            label: "VL → SC",             from: ["vl1800","vl1700"],                to: ["sc2800","sc2700"] },
+  { key: "sc->srm",           label: "SC → SRM",            from: ["sc2800","sc2700"],                to: ["srm"] },
+];
 
-  const ddPallets = ddSessions.flatMap(s => s.pallets.map(p => ({ ...p, side: 'DD', condition: s.condition, sessionId: s.id })));
-  const fzPallets = fzSessions.flatMap(s => s.pallets.map(p => ({ ...p, side: 'FZ', condition: s.condition, sessionId: s.id })));
+function getSegmentTime(taps, fromKeys, toKeys) {
+  const fromTs = fromKeys.map(k => taps[k]).filter(Boolean);
+  const toTs = toKeys.map(k => taps[k]).filter(Boolean);
+  if (!fromTs.length || !toTs.length) return null;
+  return Math.min(...toTs) - Math.min(...fromTs);
+}
+
+function SegmentBar({ label, avgMs, maxMs, count, isMax }) {
+  const pct = maxMs > 0 ? (avgMs / maxMs) * 100 : 0;
+  const fmtSeg = (ms) => ms ? (ms / 60000).toFixed(2) + " min" : "--";
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: isMax ? RED : TEXT }}>{label}</span>
+        <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
+          <span style={{ fontSize: 11, color: MUTED }}>{count} obs</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: isMax ? RED : ORANGE2 }}>{fmtSeg(avgMs)}</span>
+        </div>
+      </div>
+      <div style={{ height: 6, background: BORDER, borderRadius: 3 }}>
+        <div style={{ height: 6, width: pct + "%", background: isMax ? RED : ORANGE, borderRadius: 3, transition: "width 0.3s" }} />
+      </div>
+    </div>
+  );
+}
+
+function SummaryTab() {
+  const [ddSessions] = useStorage("sessions_DD", []);
+  const [fzSessions] = useStorage("sessions_FZ", []);
+  const [dockSessions] = useStorage("dock_sessions", []);
+  const [sideView, setSideView] = useState("DD");
+
+  const ddPallets = ddSessions.flatMap(s => s.pallets.map(p => ({ ...p, side: "DD", condition: s.condition, sessionId: s.id, offlineEquip: s.offline || {} })));
+  const fzPallets = fzSessions.flatMap(s => s.pallets.map(p => ({ ...p, side: "FZ", condition: s.condition, sessionId: s.id, offlineEquip: s.offline || {} })));
   const allPallets = [...ddPallets, ...fzPallets];
 
   const totalTime = (p) => { const v = Object.values(p.taps || {}); return v.length < 2 ? null : Math.max(...v) - Math.min(...v); };
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
   const fmtMin = (ms) => ms ? (ms / 60000).toFixed(1) + " min" : "--";
 
-  const times = allPallets.map(p => totalTime(p)).filter(Boolean);
-  const ddTimes = ddPallets.map(p => totalTime(p)).filter(Boolean);
-  const fzTimes = fzPallets.map(p => totalTime(p)).filter(Boolean);
-  const flags = allPallets.filter(p => p.coldChainFlag);
-  const rejected = allPallets.filter(p => p.rejected);
+  const activePallets = sideView === "DD" ? ddPallets : fzPallets;
+  const segments = sideView === "DD" ? DD_SEGMENTS : FZ_SEGMENTS;
 
-  // SRM breakdown
-  const srmCounts = {};
-  const srmTimes = {};
-  allPallets.forEach(p => {
-    if (p.srmNumber) {
-      const k = `SRM ${p.srmNumber}`;
-      srmCounts[k] = (srmCounts[k] || 0) + 1;
-      const t = totalTime(p);
-      if (t) { if (!srmTimes[k]) srmTimes[k] = []; srmTimes[k].push(t); }
-    }
-  });
+  // Compute avg time per segment
+  const segData = segments.map(seg => {
+    const times = activePallets.map(p => getSegmentTime(p.taps || {}, seg.from, seg.to)).filter(t => t !== null && t > 0);
+    return { ...seg, times, avg: avg(times), count: times.length };
+  }).filter(s => s.count > 0);
 
-  // Condition breakdown
-  const byCondition = {};
-  allPallets.forEach(p => {
-    if (!p.condition) return;
-    if (!byCondition[p.condition]) byCondition[p.condition] = [];
+  const maxAvg = segData.length ? Math.max(...segData.map(s => s.avg || 0)) : 0;
+
+  // SRM breakdown for active side
+  const srmMap = {};
+  activePallets.forEach(p => {
+    if (!p.srmNumber) return;
+    const k = "SRM " + p.srmNumber;
+    if (!srmMap[k]) srmMap[k] = { count: 0, times: [] };
+    srmMap[k].count++;
     const t = totalTime(p);
-    if (t) byCondition[p.condition].push(t);
+    if (t) srmMap[k].times.push(t);
   });
 
-  // Per-side condition breakdown
-  const bySideCondition = {};
-  [{label: 'DD', pallets: ddPallets}, {label: 'FZ', pallets: fzPallets}].forEach(({label, pallets}) => {
-    CONDITIONS.forEach(c => {
-      const pts = pallets.filter(p => p.condition === c).map(p => totalTime(p)).filter(Boolean);
-      if (pts.length) bySideCondition[`${label} · ${c}`] = pts;
-    });
-  });
-
-  // Dock summary
+  const coldFlags = allPallets.filter(p => p.coldChainFlag).length;
+  const rejected = allPallets.filter(p => p.rejected).length;
   const totalManHrs = dockSessions.reduce((a, s) => a + (s.manHrsTotal || 0), 0);
-  const avgManHrsPerPallet = dockSessions.filter(s => s.manHrsPerPallet).map(s => s.manHrsPerPallet);
+  const mhpp = dockSessions.filter(s => s.manHrsPerPallet).map(s => s.manHrsPerPallet);
 
-  // CSV export
   const downloadCSV = () => {
+    // Full tap-level export
     const rows = [
-      ['Pallet ID', 'Side', 'Condition', 'Session ID', 'Start Node', 'End Node', 'SRM #', 'Total Time (min)', 'Nodes Tapped', 'Cold Flag', 'Rejected', 'Timestamp'],
+      ["Pallet ID","Side","Condition","Session ID","SRM #","Cold Flag","Cold Flag Reason","Rejected","Total Time (min)",
+       "Floor TS","SG43 TS","SG41 TS","SG13 TS","SG11 TS","AMTU43 TS","AMTU41 TS","AMTU13 TS","AMTU11 TS",
+       "Conformity TS","VL48 TS","VL47 TS","VL18 TS","VL17 TS","SC58 TS","SC57 TS","SC28 TS","SC27 TS","SRM TS",
+       "Seg Floor→SG (min)","Seg SG→AMTU (min)","Seg AMTU→Conf (min)","Seg Conf→VL (min)","Seg VL→SC (min)","Seg SC→SRM (min)",
+       "Equipment Offline","Timestamp"]
     ];
+
     allPallets.forEach(p => {
-      const sorted = Object.entries(p.taps || {}).sort((a, b) => a[1] - b[1]);
-      const startNode = sorted[0]?.[0] || '';
-      const endNode = sorted[sorted.length - 1]?.[0] || '';
+      const taps = p.taps || {};
       const t = totalTime(p);
+      const side = p.side;
+      const segs = side === "DD" ? DD_SEGMENTS : FZ_SEGMENTS;
+      const segTimes = segs.map(seg => {
+        const st = getSegmentTime(taps, seg.from, seg.to);
+        return st ? (st / 60000).toFixed(3) : "";
+      });
+      const offlineList = Object.entries(p.offlineEquip || {}).filter(e => e[1]).map(e => e[0]).join("; ");
+      const fmtTs = (k) => taps[k] ? new Date(taps[k]).toISOString() : "";
       rows.push([
-        p.id || '',
-        p.side || '',
-        p.condition || '',
-        p.sessionId || '',
-        startNode,
-        endNode,
-        p.srmNumber || '',
-        t ? (t / 60000).toFixed(2) : '',
-        Object.keys(p.taps || {}).length,
-        p.coldChainFlag ? 'YES' : 'NO',
-        p.rejected ? 'YES' : 'NO',
-        p.endTime ? new Date(p.endTime).toISOString() : '',
+        p.id || "", p.side || "", p.condition || "", p.sessionId || "",
+        p.srmNumber || "",
+        p.coldChainFlag ? "YES" : "NO",
+        p.coldChainFlag ? (p.coldChainFlag.reason || "") : "",
+        p.rejected ? "YES" : "NO",
+        t ? (t / 60000).toFixed(3) : "",
+        fmtTs("floor"), fmtTs("sg4300"), fmtTs("sg4100"), fmtTs("sg1300"), fmtTs("sg1100"),
+        fmtTs("amtu4300"), fmtTs("amtu4100"), fmtTs("amtu1300"), fmtTs("amtu1100"),
+        fmtTs("dd_conformity") || fmtTs("fz_conformity"),
+        fmtTs("vl4800"), fmtTs("vl4700"), fmtTs("vl1800"), fmtTs("vl1700"),
+        fmtTs("sc5800"), fmtTs("sc5700"), fmtTs("sc2800"), fmtTs("sc2700"),
+        fmtTs("srm"),
+        ...segTimes,
+        offlineList,
+        p.endTime ? new Date(p.endTime).toISOString() : "",
       ]);
     });
-    // Dock rows
+
     rows.push([]);
-    rows.push(['--- DOCK SESSIONS ---']);
-    rows.push(['Session ID', 'Side', 'Door', 'People', 'Mode', 'Pallets', 'Elapsed (min)', 'Man-Hrs Total', 'Man-Hrs Per Pallet', 'Load Description', 'Date']);
+    rows.push(["--- DOCK SESSIONS ---"]);
+    rows.push(["Session ID","Side","Door","People","Mode","Pallets","Elapsed (min)","Man-Hrs Total","Man-Hrs Per Pallet","Load Description","Date"]);
     dockSessions.forEach(s => {
       rows.push([
-        s.id || '',
-        s.meta?.side || '',
-        s.meta?.door || '',
-        s.meta?.people || '',
-        s.mode || '',
-        s.palletCount || '',
-        s.sessionElapsed ? (s.sessionElapsed / 60000).toFixed(2) : '',
-        s.manHrsTotal ? s.manHrsTotal.toFixed(3) : '',
-        s.manHrsPerPallet ? s.manHrsPerPallet.toFixed(3) : '',
-        s.meta?.desc || '',
-        s.ts ? new Date(s.ts).toISOString() : '',
+        s.id || "", s.meta?.side || "", s.meta?.door || "", s.meta?.people || "",
+        s.mode || "", s.palletCount || "",
+        s.sessionElapsed ? (s.sessionElapsed / 60000).toFixed(2) : "",
+        s.manHrsTotal ? s.manHrsTotal.toFixed(3) : "",
+        s.manHrsPerPallet ? s.manHrsPerPallet.toFixed(3) : "",
+        s.meta?.desc || "",
+        s.ts ? new Date(s.ts).toISOString() : "",
       ]);
     });
-    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, "'")}"`).join(',')).join('
-');
-    const blob = new Blob([csv], { type: 'text/csv' });
+
+    const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, "'") + '"').join(",")).join(String.fromCharCode(10));
+    const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
-    a.download = `jonah-export-${new Date().toISOString().slice(0,10)}.csv`;
+    a.download = "jonah-export-" + new Date().toISOString().slice(0, 10) + ".csv";
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  return <div>
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, marginBottom: 4 }}>
-      <SLabel mt={0}>Overview</SLabel>
-      <Btn variant="primary" small onClick={downloadCSV} style={{ width: 'auto', padding: '8px 16px', marginBottom: 0 }}>⬇ Export CSV</Btn>
-    </div>
-
-    {/* Top stat cards */}
-    <StatPair
-      left={{ label: 'Total Pallets', value: allPallets.length, color: TEXT }}
-      right={{ label: 'Avg Transit', value: fmtMin(avg(times)), color: ORANGE2 }}
-    />
-    <StatPair
-      left={{ label: 'Cold Flags', value: flags.length, color: flags.length > 0 ? RED : GREEN }}
-      right={{ label: 'Rejections', value: rejected.length, color: rejected.length > 0 ? RED : GREEN }}
-    />
-    <StatPair
-      left={{ label: 'DD Pallets', value: ddPallets.length, color: ORANGE2, sub: `Avg ${fmtMin(avg(ddTimes))}` }}
-      right={{ label: 'FZ Pallets', value: fzPallets.length, color: BLUE, sub: `Avg ${fmtMin(avg(fzTimes))}` }}
-    />
-
-    <Hr />
-    <SLabel>By Condition</SLabel>
-    {Object.entries(bySideCondition).length === 0 && <div style={{ color: MUTED, fontSize: 12, marginBottom: 12 }}>No data yet.</div>}
-    {Object.entries(bySideCondition).map(([label, times]) => {
-      const a = avg(times);
-      return <Card key={label} style={{ marginBottom: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: TEXT }}>{label}</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color: ORANGE2 }}>{fmtMin(a)}</span>
+  return (
+    <div>
+      {/* Header row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {["DD","FZ"].map(s => (
+            <button key={s} onClick={() => setSideView(s)} style={{ padding: "8px 18px", fontSize: 12, fontWeight: 700, fontFamily: "inherit", borderRadius: 6, cursor: "pointer", border: "1px solid " + (sideView === s ? ORANGE : BORDER), background: sideView === s ? "rgba(232,118,10,0.15)" : CARD, color: sideView === s ? ORANGE2 : MUTED }}>
+              {s === "DD" ? "Dairy/Deli" : "Freezer"}
+            </button>
+          ))}
         </div>
-        <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>{times.length} observations · min {fmtMin(Math.min(...times))} · max {fmtMin(Math.max(...times))}</div>
-      </Card>;
-    })}
-
-    <Hr />
-    <SLabel>By SRM</SLabel>
-    {Object.keys(srmCounts).length === 0 && <div style={{ color: MUTED, fontSize: 12, marginBottom: 12 }}>No SRM data yet.</div>}
-    {Object.entries(srmCounts).sort((a, b) => {
-      const na = parseInt(a[0].replace('SRM ', ''));
-      const nb = parseInt(b[0].replace('SRM ', ''));
-      return na - nb;
-    }).map(([srm, count]) => {
-      const times = srmTimes[srm] || [];
-      const a = avg(times);
-      return <Card key={srm} style={{ marginBottom: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: BLUE }}>{srm}</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color: ORANGE2 }}>{fmtMin(a)}</span>
-        </div>
-        <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>{count} pallets · min {fmtMin(Math.min(...times))} · max {fmtMin(Math.max(...times))}</div>
-      </Card>;
-    })}
-
-    <Hr />
-    <SLabel>Dock / Man-Hours</SLabel>
-    <StatPair
-      left={{ label: 'Dock Sessions', value: dockSessions.length, color: TEXT }}
-      right={{ label: 'Total Man-Hrs', value: totalManHrs.toFixed(2), color: GREEN }}
-    />
-    {avgManHrsPerPallet.length > 0 && <Card>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: TEXT }}>Avg Man-Hrs / Pallet</span>
-        <span style={{ fontSize: 18, fontWeight: 700, color: ORANGE2 }}>{avg(avgManHrsPerPallet).toFixed(3)}</span>
+        <Btn variant="primary" small onClick={downloadCSV} style={{ width: "auto", padding: "8px 16px", marginBottom: 0 }}>Export CSV</Btn>
       </div>
-      <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>across {avgManHrsPerPallet.length} sessions</div>
-    </Card>}
 
-    <div style={{ height: 24 }} />
-  </div>;
+      {/* Quick stats */}
+      <StatPair
+        left={{ label: "Total Pallets", value: allPallets.length, color: TEXT, sub: ddPallets.length + " DD / " + fzPallets.length + " FZ" }}
+        right={{ label: "Avg Full Transit", value: fmtMin(avg(activePallets.map(p => totalTime(p)).filter(Boolean))), color: ORANGE2, sub: activePallets.length + " observations" }}
+      />
+      <StatPair
+        left={{ label: "Cold Flags", value: coldFlags, color: coldFlags > 0 ? RED : GREEN }}
+        right={{ label: "Rejections", value: rejected, color: rejected > 0 ? RED : GREEN }}
+      />
+
+      {/* Segment breakdown — the actual bottleneck view */}
+      <Hr />
+      <SLabel>{sideView === "DD" ? "Dairy/Deli" : "Freezer"} — Avg Time Per Segment</SLabel>
+      {segData.length === 0 && <div style={{ color: MUTED, fontSize: 12, marginBottom: 12 }}>Complete some observations to see segment data.</div>}
+      {segData.map(seg => (
+        <SegmentBar
+          key={seg.key}
+          label={seg.label}
+          avgMs={seg.avg}
+          maxMs={maxAvg}
+          count={seg.count}
+          isMax={seg.avg === maxAvg && segData.length > 1}
+        />
+      ))}
+      {segData.length > 1 && (
+        <div style={{ background: "rgba(224,82,82,0.08)", border: "1px solid rgba(224,82,82,0.3)", borderRadius: 8, padding: "10px 14px", marginTop: 4, marginBottom: 4 }}>
+          <span style={{ fontSize: 11, color: RED, fontWeight: 700 }}>
+            Longest segment: {segData.reduce((a, b) => (a.avg || 0) > (b.avg || 0) ? a : b).label}
+          </span>
+          <span style={{ fontSize: 11, color: MUTED }}> — potential constraint</span>
+        </div>
+      )}
+
+      {/* SRM breakdown */}
+      <Hr />
+      <SLabel>SRM Load Distribution</SLabel>
+      {Object.keys(srmMap).length === 0 && <div style={{ color: MUTED, fontSize: 12, marginBottom: 12 }}>No SRM data yet.</div>}
+      {Object.entries(srmMap).sort((a, b) => parseInt(a[0].replace("SRM ", "")) - parseInt(b[0].replace("SRM ", ""))).map(([srm, data]) => {
+        const a = avg(data.times);
+        return (
+          <Card key={srm} style={{ marginBottom: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: BLUE }}>{srm}</span>
+              <div style={{ display: "flex", gap: 12 }}>
+                <span style={{ fontSize: 11, color: MUTED }}>{data.count} pallets</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: ORANGE2 }}>{fmtMin(a)}</span>
+              </div>
+            </div>
+            {data.times.length > 1 && <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>min {fmtMin(Math.min(...data.times))} · max {fmtMin(Math.max(...data.times))}</div>}
+          </Card>
+        );
+      })}
+
+      {/* Dock / man hours */}
+      <Hr />
+      <SLabel>Dock / Man-Hours</SLabel>
+      <StatPair
+        left={{ label: "Dock Sessions", value: dockSessions.length, color: TEXT }}
+        right={{ label: "Total Man-Hrs", value: totalManHrs.toFixed(2), color: GREEN }}
+      />
+      {mhpp.length > 0 && (
+        <Card>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: TEXT }}>Avg Man-Hrs / Pallet</span>
+            <span style={{ fontSize: 18, fontWeight: 700, color: ORANGE2 }}>{avg(mhpp).toFixed(3)}</span>
+          </div>
+          <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>across {mhpp.length} sessions</div>
+        </Card>
+      )}
+
+      <div style={{ height: 24 }} />
+    </div>
+  );
 }
 
 // ── App Shell ─────────────────────────────────────────────
@@ -883,7 +1036,7 @@ export default function App() {
           <span style={{ fontSize: 15, fontWeight: 900, color: "#fff" }}>J</span>
         </div>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: TEXT, letterSpacing: 0.3 }}>TOC Jonah · The Jonah Edition</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: TEXT, letterSpacing: 0.3 }}>TOC - Jonah Edition</div>
           <div style={{ fontSize: 10, color: MUTED, letterSpacing: 1, textTransform: "uppercase" }}>System Observer</div>
         </div>
       </div>
