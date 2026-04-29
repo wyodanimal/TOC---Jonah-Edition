@@ -809,20 +809,31 @@ function getSegmentTime(taps, fromKeys, toKeys) {
   return Math.min(...toTs) - Math.min(...fromTs);
 }
 
-function SegmentBar({ label, avgMs, maxMs, count, isMax }) {
-  const pct = maxMs > 0 ? (avgMs / maxMs) * 100 : 0;
+function SegmentBar({ label, avgMs, minMs, maxMs, barMax, count, isMax }) {
+  const pct = barMax > 0 ? (avgMs / barMax) * 100 : 0;
   const fmtSeg = (ms) => ms ? (ms / 60000).toFixed(2) + " min" : "--";
   return (
-    <div style={{ marginBottom: 12 }}>
+    <div style={{ marginBottom: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: isMax ? RED : TEXT }}>{label}</span>
-        <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
-          <span style={{ fontSize: 11, color: MUTED }}>{count} obs</span>
-          <span style={{ fontSize: 14, fontWeight: 700, color: isMax ? RED : ORANGE2 }}>{fmtSeg(avgMs)}</span>
-        </div>
+        <span style={{ fontSize: 11, color: MUTED }}>{count} obs</span>
       </div>
-      <div style={{ height: 6, background: BORDER, borderRadius: 3 }}>
+      <div style={{ height: 6, background: BORDER, borderRadius: 3, marginBottom: 6 }}>
         <div style={{ height: 6, width: pct + "%", background: isMax ? RED : ORANGE, borderRadius: 3, transition: "width 0.3s" }} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4 }}>
+        <div style={{ background: SURFACE, borderRadius: 6, padding: "6px 8px", textAlign: "center" }}>
+          <div style={{ fontSize: 9, color: MUTED, letterSpacing: 1, textTransform: "uppercase", marginBottom: 2 }}>Min</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: GREEN }}>{fmtSeg(minMs)}</div>
+        </div>
+        <div style={{ background: SURFACE, borderRadius: 6, padding: "6px 8px", textAlign: "center", border: "1px solid " + (isMax ? RED : ORANGE) }}>
+          <div style={{ fontSize: 9, color: MUTED, letterSpacing: 1, textTransform: "uppercase", marginBottom: 2 }}>Avg</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: isMax ? RED : ORANGE2 }}>{fmtSeg(avgMs)}</div>
+        </div>
+        <div style={{ background: SURFACE, borderRadius: 6, padding: "6px 8px", textAlign: "center" }}>
+          <div style={{ fontSize: 9, color: MUTED, letterSpacing: 1, textTransform: "uppercase", marginBottom: 2 }}>Max</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: RED }}>{fmtSeg(maxMs)}</div>
+        </div>
       </div>
     </div>
   );
@@ -967,7 +978,9 @@ function SummaryTab() {
           key={seg.key}
           label={seg.label}
           avgMs={seg.avg}
-          maxMs={maxAvg}
+          minMs={seg.times.length ? Math.min(...seg.times) : null}
+          maxMs={seg.times.length ? Math.max(...seg.times) : null}
+          barMax={maxAvg}
           count={seg.count}
           isMax={seg.avg === maxAvg && segData.length > 1}
         />
