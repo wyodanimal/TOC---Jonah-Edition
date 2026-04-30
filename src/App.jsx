@@ -349,6 +349,16 @@ function ObserverTab({ side, nodes, settings }) {
   const [slowFlag, setSlowFlag] = useState(null);
   const [srmPicker, setSrmPicker] = useState(false);
   const [view, setView] = useState("setup");
+  const [errors, setErrors] = useState([]);          // [{start, end, note}]
+  const [errorActive, setErrorActive] = useState(false);
+  const [errorStart, setErrorStart] = useState(null);
+  const [errorNote, setErrorNote] = useState("");
+  const [errorTick, setErrorTick] = useState(0);
+  useEffect(() => {
+    if (!errorActive) return;
+    const i = setInterval(() => setErrorTick(t => t+1), 1000);
+    return () => clearInterval(i);
+  }, [errorActive]);
 
   const laneMap = side === "DD" ? DD_LANE_MAP : FZ_LANE_MAP;
 
@@ -361,6 +371,24 @@ function ObserverTab({ side, nodes, settings }) {
       return settings[settingsKey].split(",").map(n => parseInt(n.trim())).filter(n => !isNaN(n));
     }
     return DEFAULT_SRM_ASSIGNMENTS[lockedSC] || [];
+  };
+
+  const startError = () => {
+    setErrorActive(true);
+    setErrorStart(Date.now());
+    setErrorNote("");
+  };
+  const stopError = () => {
+    if (!errorStart) return;
+    const err = { start: errorStart, end: Date.now(), duration: Date.now() - errorStart, note: errorNote };
+    setErrors(prev => [...prev, err]);
+    // Attach errors to pallet
+    if (pallet) {
+      setPallet(p => ({ ...p, errors: [...(p.errors||[]), err] }));
+    }
+    setErrorActive(false);
+    setErrorStart(null);
+    setErrorNote("");
   };
 
   const firstTs = useCallback(() => {
@@ -432,10 +460,13 @@ function ObserverTab({ side, nodes, settings }) {
   };
 
   const startPallet = (thenKey) => {
-    const p = {id:"PENDING",taps:{},rejected:false,coldChainFlag:null,complete:false};
+    const p = {id:"PENDING",taps:{},rejected:false,coldChainFlag:null,complete:false,errors:[]};
     setLockedLane(null);
     setLockedSC(null);
     setSrmNumber(null);
+    setErrors([]);
+    setErrorActive(false);
+    setErrorStart(null);
     if (thenKey) {
       const nodeLane = laneMap[thenKey];
       if (nodeLane) setLockedLane(nodeLane);
@@ -502,14 +533,39 @@ function ObserverTab({ side, nodes, settings }) {
     {!pallet&&<Btn variant="primary" onClick={() => startPallet()}>+ New Pallet</Btn>}
 
     {pallet&&<>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           <Chip label={pallet.id==="PENDING"?(side==="FZ"?"F":"D")+" · In Progress":pallet.id} color="orange"/>
           {srmNumber&&<Chip label={"SRM "+srmNumber} color="blue"/>}
           {pallet.coldChainFlag&&<Chip label="Cold Flag" color="red"/>}
+          {errors.length>0&&<Chip label={errors.length+" error"+(errors.length>1?"s":"")} color="red"/>}
         </div>
         {conformityTapped()&&<Btn variant="danger" small onClick={rejectPallet} style={{width:"auto",padding:"6px 14px",marginBottom:0}}>Reject</Btn>}
       </div>
+
+      {/* Error timer */}
+      {errorActive
+        ? <div style={{background:"rgba(224,82,82,0.12)",border:"2px solid "+RED,borderRadius:8,padding:"10px 14px",marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:RED}}>⚠ Error Timer Running</div>
+                <div style={{fontSize:22,fontWeight:700,color:RED,fontFamily:"monospace"}}>{fmt(errorStart?Date.now()-errorStart:0)}</div>
+              </div>
+              <button onClick={stopError} style={{background:RED,color:"#fff",border:"none",borderRadius:8,padding:"12px 16px",fontSize:13,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>Clear Error</button>
+            </div>
+            <input type="text" placeholder="Optional note..." value={errorNote} onChange={e=>setErrorNote(e.target.value)}
+              style={{width:"100%",background:"rgba(0,0,0,0.2)",border:"1px solid rgba(224,82,82,0.4)",color:TEXT,fontFamily:"inherit",fontSize:12,padding:"8px 10px",borderRadius:6,outline:"none",boxSizing:"border-box"}}/>
+          </div>
+        : <button onClick={startError} style={{display:"block",width:"100%",background:"transparent",border:"1px solid "+RED,color:RED,borderRadius:8,padding:"10px 12px",fontSize:12,fontWeight:700,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:12,letterSpacing:0.5}}>
+            + Log Error {errors.length>0&&"("+errors.length+" logged)"}
+          </button>
+      }
+      {errors.length>0&&!errorActive&&<div style={{marginBottom:12}}>
+        {errors.map((e,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:MUTED,padding:"4px 0",borderBottom:"1px solid "+BORDER}}>
+          <span>Error {i+1}{e.note?" — "+e.note:""}</span>
+          <span style={{color:RED,fontWeight:700}}>{fmt(e.duration)}</span>
+        </div>)}
+      </div>}
 
       {nodes.map((node,idx) => {
         const arrow = idx>0&&<div style={{textAlign:"center",color:FAINT,fontSize:13,margin:"-2px 0 4px"}}>↓</div>;
@@ -558,7 +614,7 @@ function ObserverTab({ side, nodes, settings }) {
 
       <div style={{marginTop:12}}>
         <Btn variant="success" onClick={completePallet}>Complete Observation</Btn>
-        <Btn variant="ghost" small onClick={() => { setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); }}>Cancel / Discard</Btn>
+        <Btn variant="ghost" small onClick={() => { setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); setErrors([]); setErrorActive(false); }}>Cancel / Discard</Btn>
       </div>
     </>}
     <div style={{height:24}}/>
@@ -590,7 +646,18 @@ function UnloadingTab({ settings }) {
   const [single,setSingle] = useState({floor:null,induct:null});
   const [batchStart,setBatchStart] = useState(null);
   const [now,setNow] = useState(Date.now());
+  const [crewGaps,setCrewGaps] = useState([]);
+  const [gapActive,setGapActive] = useState(false);
+  const [gapStart,setGapStart] = useState(null);
   useEffect(()=>{const i=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(i);},[]);
+
+  const startGap = () => { setGapActive(true); setGapStart(Date.now()); };
+  const stopGap  = () => {
+    if (!gapStart) return;
+    setCrewGaps(prev => [...prev, {start:gapStart,end:Date.now(),duration:Date.now()-gapStart}]);
+    setGapActive(false); setGapStart(null);
+  };
+  const totalGapTime = crewGaps.reduce((a,g)=>a+g.duration,0);
 
   const INDUCT = {FZ:["SG 1300","SG 1100"],DD:["SG 4300","SG 4100"]};
   const completedBatch = batch.filter(p=>p.floorTs&&p.inductTs);
@@ -605,10 +672,12 @@ function UnloadingTab({ settings }) {
     const manHrsPerPallet = palletCount>0?manHrsTotal/palletCount:null;
     setSessions(p=>[...p,{id:"DK"+Date.now().toString(36).toUpperCase().slice(-5),ts:Date.now(),meta,mode,
       data:mode==="single"?single:batch.filter(p=>p.floorTs||p.inductTs),
-      sessionElapsed,palletCount,manHrsTotal,manHrsPerPallet}]);
+      sessionElapsed,palletCount,manHrsTotal,manHrsPerPallet,
+      crewGaps,totalGapTime:crewGaps.reduce((a,g)=>a+g.duration,0)}]);
     setMode(null); setSingle({floor:null,induct:null});
     setBatch(Array(5).fill(null).map((_,i)=>({id:i+1,floorTs:null,inductTs:null})));
     setBatchStart(null); setMeta({side:"FZ",door:"",people:"2",induct:"SG 1300",desc:""});
+    setCrewGaps([]); setGapActive(false); setGapStart(null);
   };
 
   if (!mode) return <div>
@@ -664,6 +733,26 @@ function UnloadingTab({ settings }) {
       <textarea rows={2} placeholder="Enter after unloading..." value={meta.desc} onChange={e=>setMeta(p=>({...p,desc:e.target.value}))} style={ta}/>
       <Btn variant="primary" onClick={saveSession}>Save Session</Btn>
     </>}
+    <Hr/>
+    <SLabel>Crew Gaps</SLabel>
+    {gapActive
+      ? <div style={{background:"rgba(224,82,82,0.12)",border:"2px solid "+RED,borderRadius:8,padding:"10px 14px",marginBottom:8}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:RED,textTransform:"uppercase",letterSpacing:1}}>Crew Gone</div>
+              <div style={{fontSize:22,fontWeight:700,color:RED,fontFamily:"monospace"}}>{fmt(gapStart?now-gapStart:0)}</div>
+            </div>
+            <button onClick={stopGap} style={{background:GREEN2,color:"#fff",border:"none",borderRadius:8,padding:"12px 16px",fontSize:13,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>Crew Back</button>
+          </div>
+        </div>
+      : <button onClick={startGap} style={{display:"block",width:"100%",background:"transparent",border:"1px solid "+RED,color:RED,borderRadius:8,padding:"10px 12px",fontSize:12,fontWeight:700,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:8}}>
+          + Crew Left {crewGaps.length>0&&"("+crewGaps.length+" gap"+(crewGaps.length>1?"s":"")+", "+fmt(totalGapTime)+" total)"}
+        </button>
+    }
+    {crewGaps.map((g,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:MUTED,padding:"4px 0",borderBottom:"1px solid "+BORDER}}>
+      <span>Gap {i+1} — {new Date(g.start).toLocaleTimeString()}</span>
+      <span style={{color:RED,fontWeight:700}}>{fmt(g.duration)}</span>
+    </div>)}
   </div>;
 
   return <div>
@@ -693,6 +782,26 @@ function UnloadingTab({ settings }) {
     </Card>)}
     <Hr/>
     {completedBatch.length>0&&batchStart&&<ManHourCard people={meta.people} elapsedMs={Date.now()-batchStart} palletCount={completedBatch.length} label="Session Summary"/>}
+    <SLabel>Crew Gaps</SLabel>
+    {gapActive
+      ? <div style={{background:"rgba(224,82,82,0.12)",border:"2px solid "+RED,borderRadius:8,padding:"10px 14px",marginBottom:8}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:RED,textTransform:"uppercase",letterSpacing:1}}>Crew Gone</div>
+              <div style={{fontSize:22,fontWeight:700,color:RED,fontFamily:"monospace"}}>{fmt(gapStart?now-gapStart:0)}</div>
+            </div>
+            <button onClick={stopGap} style={{background:GREEN2,color:"#fff",border:"none",borderRadius:8,padding:"12px 16px",fontSize:13,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>Crew Back</button>
+          </div>
+        </div>
+      : <button onClick={startGap} style={{display:"block",width:"100%",background:"transparent",border:"1px solid "+RED,color:RED,borderRadius:8,padding:"10px 12px",fontSize:12,fontWeight:700,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:8}}>
+          + Crew Left {crewGaps.length>0&&"("+crewGaps.length+" gap"+(crewGaps.length>1?"s":"")+", "+fmt(totalGapTime)+" total)"}
+        </button>
+    }
+    {crewGaps.map((g,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:MUTED,padding:"4px 0",borderBottom:"1px solid "+BORDER}}>
+      <span>Gap {i+1} — {new Date(g.start).toLocaleTimeString()}</span>
+      <span style={{color:RED,fontWeight:700}}>{fmt(g.duration)}</span>
+    </div>)}
+    <Hr/>
     <SLabel>Load Description</SLabel>
     <textarea rows={2} placeholder="Enter after unloading..." value={meta.desc} onChange={e=>setMeta(p=>({...p,desc:e.target.value}))} style={ta}/>
     <Btn variant="primary" onClick={saveSession}>Save Session</Btn>
