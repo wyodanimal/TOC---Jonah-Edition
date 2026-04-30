@@ -1020,6 +1020,165 @@ function SummaryTab() {
     URL.revokeObjectURL(url);
   };
 
+  const [jonahMode, setJonahMode] = useState(null); // null | "overall" | "session" | "pallet"
+  const [jonahScope, setJonahScope] = useState(null); // selected session or pallet
+  const [jonahResponse, setJonahResponse] = useState(null);
+  const [jonahLoading, setJonahLoading] = useState(false);
+  const [jonahError, setJonahError] = useState(null);
+
+  const SYSTEM_CONTEXT = `You are Jonah, the expert from the Theory of Constraints. You observe warehouse mechanized conveyor systems and help find constraints using the Socratic method — you ask pointed questions and share observations, you do not give direct orders.
+
+CRITICAL SYSTEM FACTS you must always respect:
+- This warehouse has TWO completely independent mechanized systems: Dairy/Deli (DD) and Freezer (FZ)
+- DD and FZ do NOT interact in any way — no shared equipment, no crossover, no causal relationship
+- A constraint or issue on FZ has ZERO effect on DD performance and vice versa
+- Never suggest that one side's performance causes or affects the other side
+- Each side has its own induction (SG), AMTU, Conformity check, VL lanes, SC shuttles, and SRMs (Storage/Retrieval Machines)
+- DD SRMs are numbered 11-17, FZ SRMs are numbered 1-10
+- Shared SRMs (crane 14 for DD, crane 5 for FZ) serve both VL lanes on their respective side only
+
+Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what the observer sees. Surface the constraint. Times are in minutes.`;
+
+  const buildDataPackage = (mode, scope) => {
+    const fmtSeg = (ms) => ms != null ? (ms / 60000).toFixed(2) + " min" : "no data";
+    const fmtAvg = (arr) => arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length/60000).toFixed(2) + " min" : "no data";
+    const totalTime = (p) => { const v = Object.values(p.taps || {}); return v.length < 2 ? null : Math.max(...v) - Math.min(...v); };
+
+    if (mode === "overall") {
+      const ddSegs = DD_SEGMENTS.map(seg => {
+        const times = ddPallets.map(p => getSegmentTime(p.taps||{}, seg.from, seg.to)).filter(t=>t&&t>0);
+        return seg.label + ": avg=" + fmtAvg(times) + " min=" + fmtSeg(times.length?Math.min(...times):null) + " max=" + fmtSeg(times.length?Math.max(...times):null) + " n=" + times.length;
+      });
+      const fzSegs = FZ_SEGMENTS.map(seg => {
+        const times = fzPallets.map(p => getSegmentTime(p.taps||{}, seg.from, seg.to)).filter(t=>t&&t>0);
+        return seg.label + ": avg=" + fmtAvg(times) + " min=" + fmtSeg(times.length?Math.min(...times):null) + " max=" + fmtSeg(times.length?Math.max(...times):null) + " n=" + times.length;
+      });
+      const srmDD = {};
+      ddPallets.forEach(p => { if(!p.srmNumber) return; const k="SRM "+p.srmNumber; if(!srmDD[k]) srmDD[k]={count:0,times:[]}; srmDD[k].count++; const t=totalTime(p); if(t) srmDD[k].times.push(t); });
+      const srmFZ = {};
+      fzPallets.forEach(p => { if(!p.srmNumber) return; const k="SRM "+p.srmNumber; if(!srmFZ[k]) srmFZ[k]={count:0,times:[]}; srmFZ[k].count++; const t=totalTime(p); if(t) srmFZ[k].times.push(t); });
+      const ddFlags = ddPallets.filter(p=>p.coldChainFlag).length;
+      const fzFlags = fzPallets.filter(p=>p.coldChainFlag).length;
+      const ddRej = ddPallets.filter(p=>p.rejected).length;
+      const fzRej = fzPallets.filter(p=>p.rejected).length;
+      const ddTimes = ddPallets.map(p=>totalTime(p)).filter(Boolean);
+      const fzTimes = fzPallets.map(p=>totalTime(p)).filter(Boolean);
+
+      return `OVERALL SYSTEM ANALYSIS REQUEST
+
+DAIRY/DELI SYSTEM (independent system):
+Total observations: ${ddPallets.length}
+Avg full transit: ${fmtAvg(ddTimes)}
+Cold chain flags: ${ddFlags} | Rejections: ${ddRej}
+Segment breakdown: ${ddSegs.join(" | ")}
+SRM distribution: ${Object.entries(srmDD).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ") || "no SRM data"}
+
+FREEZER SYSTEM (independent system, no relation to DD):
+Total observations: ${fzPallets.length}
+Avg full transit: ${fmtAvg(fzTimes)}
+Cold chain flags: ${fzFlags} | Rejections: ${fzRej}
+Segment breakdown: ${fzSegs.join(" | ")}
+SRM distribution: ${Object.entries(srmFZ).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ") || "no SRM data"}
+
+Dock man-hours: ${dockSessions.length} sessions, ${dockSessions.reduce((a,s)=>a+(s.manHrsTotal||0),0).toFixed(2)} total man-hrs
+
+Analyze each system independently. Where are the constraints? What should the observer look at next?`;
+    }
+
+    if (mode === "session" && scope) {
+      const s = scope;
+      const side = s.side || s.sideLabel;
+      const segs = side === "DD" ? DD_SEGMENTS : FZ_SEGMENTS;
+      const palletDetails = (s.pallets||[]).map((p,i) => {
+        const segTimes = segs.map(seg => {
+          const t = getSegmentTime(p.taps||{}, seg.from, seg.to);
+          return seg.label + ": " + fmtSeg(t);
+        }).join(", ");
+        const tt = totalTime(p);
+        return "Pallet " + (i+1) + " (" + p.id + "): total=" + fmtSeg(tt) + " | " + segTimes + (p.srmNumber?" | SRM "+p.srmNumber:"") + (p.rejected?" | REJECTED":"") + (p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")":"");
+      });
+      const offlineEquip = Object.entries(s.offline||{}).filter(e=>e[1]).map(e=>e[0]).join(", ") || "none";
+      return `SESSION ANALYSIS REQUEST
+
+System: ${side === "DD" ? "Dairy/Deli (independent system)" : "Freezer (independent system)"}
+Session ID: ${s.id}
+Condition: ${s.condition}
+Date: ${new Date(s.startTime).toLocaleDateString()}
+Equipment offline this session: ${offlineEquip}
+Session notes: ${s.notes || "none"}
+
+Pallets observed (${(s.pallets||[]).length} total):
+${palletDetails.join("
+")}
+
+Analyze this session. What patterns do you see? What segments are slow? Any outliers worth investigating?`;
+    }
+
+    if (mode === "pallet" && scope) {
+      const p = scope;
+      const side = p.side;
+      const segs = side === "DD" ? DD_SEGMENTS : FZ_SEGMENTS;
+      const segTimes = segs.map(seg => {
+        const t = getSegmentTime(p.taps||{}, seg.from, seg.to);
+        return seg.label + ": " + fmtSeg(t);
+      }).join("
+");
+      const sorted = Object.entries(p.taps||{}).sort((a,b)=>a[1]-b[1]);
+      const tapDetail = sorted.map(([k,v]) => k + " at " + new Date(v).toLocaleTimeString()).join(", ");
+      const tt = totalTime(p);
+      return `SINGLE PALLET ANALYSIS REQUEST
+
+System: ${side === "DD" ? "Dairy/Deli (independent system)" : "Freezer (independent system)"}
+Pallet ID: ${p.id}
+Condition: ${p.condition}
+Total transit time: ${fmtSeg(tt)}
+SRM used: ${p.srmNumber ? "SRM " + p.srmNumber : "not recorded"}
+Rejected: ${p.rejected ? "YES" : "NO"}
+Cold chain flag: ${p.coldChainFlag ? "YES — " + p.coldChainFlag.reason : "NO"}
+
+Tap sequence: ${tapDetail}
+
+Segment breakdown:
+${segTimes}
+
+Analyze this single pallet observation. Where did it slow down? Anything unusual?`;
+    }
+    return null;
+  };
+
+  const askJonah = async () => {
+    const dataStr = buildDataPackage(jonahMode, jonahScope);
+    if (!dataStr) return;
+    setJonahLoading(true);
+    setJonahResponse(null);
+    setJonahError(null);
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: SYSTEM_CONTEXT,
+          messages: [{ role: "user", content: dataStr }]
+        })
+      });
+      const data = await response.json();
+      const text = data.content?.map(c => c.text || "").join("") || "No response received.";
+      setJonahResponse(text);
+    } catch(e) {
+      setJonahError("Could not reach Jonah. Check your connection.");
+    }
+    setJonahLoading(false);
+  };
+
+  const allSessions = [
+    ...ddSessions.map(s => ({ ...s, sideLabel: "DD" })),
+    ...fzSessions.map(s => ({ ...s, sideLabel: "FZ" })),
+  ].sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
+
+  const allPalletsFlat = allSessions.flatMap(s => (s.pallets||[]).map(p => ({ ...p, side: s.sideLabel })));
+
   return (
     <div>
       {/* Header row */}
@@ -1032,6 +1191,72 @@ function SummaryTab() {
           ))}
         </div>
         <Btn variant="primary" small onClick={downloadCSV} style={{ width: "auto", padding: "8px 16px", marginBottom: 0 }}>Export CSV</Btn>
+      </div>
+
+      {/* ASK JONAH SECTION */}
+      <div style={{ background: "rgba(232,118,10,0.06)", border: "1px solid " + ORANGE, borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: ORANGE2 }}>Ask Jonah</div>
+            <div style={{ fontSize: 11, color: MUTED }}>AI analysis in Jonah's voice</div>
+          </div>
+          {jonahResponse && <button onClick={() => { setJonahResponse(null); setJonahMode(null); setJonahScope(null); }}
+            style={{ background: "transparent", border: "none", color: MUTED, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Clear</button>}
+        </div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+          {["overall","session","pallet"].map(m => (
+            <button key={m} onClick={() => { setJonahMode(m); setJonahScope(null); setJonahResponse(null); }} style={{
+              padding: "8px 14px", fontSize: 11, fontWeight: 700, fontFamily: "inherit", borderRadius: 6, cursor: "pointer",
+              border: "1px solid " + (jonahMode === m ? ORANGE : BORDER),
+              background: jonahMode === m ? "rgba(232,118,10,0.15)" : CARD,
+              color: jonahMode === m ? ORANGE2 : MUTED, textTransform: "capitalize"
+            }}>{m === "overall" ? "Overall" : m === "session" ? "By Session" : "By Pallet"}</button>
+          ))}
+        </div>
+
+        {jonahMode === "session" && <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>Select Session</div>
+          {allSessions.length === 0 && <div style={{ fontSize: 12, color: MUTED }}>No sessions yet.</div>}
+          {allSessions.slice(0, 10).map(s => (
+            <div key={s.id} onClick={() => setJonahScope(s)} style={{
+              padding: "8px 10px", borderRadius: 6, marginBottom: 4, cursor: "pointer",
+              background: jonahScope?.id === s.id ? "rgba(232,118,10,0.15)" : SURFACE,
+              border: "1px solid " + (jonahScope?.id === s.id ? ORANGE : BORDER)
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: jonahScope?.id === s.id ? ORANGE2 : TEXT }}>{s.id}</span>
+              <span style={{ fontSize: 11, color: MUTED, marginLeft: 8 }}>{s.sideLabel} · {s.condition} · {s.pallets?.length||0} pallets</span>
+            </div>
+          ))}
+        </div>}
+
+        {jonahMode === "pallet" && <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 10, color: MUTED, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>Select Pallet</div>
+          {allPalletsFlat.length === 0 && <div style={{ fontSize: 12, color: MUTED }}>No pallets yet.</div>}
+          {allPalletsFlat.slice(0, 15).map((p, i) => (
+            <div key={i} onClick={() => setJonahScope(p)} style={{
+              padding: "8px 10px", borderRadius: 6, marginBottom: 4, cursor: "pointer",
+              background: jonahScope?.id === p.id ? "rgba(232,118,10,0.15)" : SURFACE,
+              border: "1px solid " + (jonahScope?.id === p.id ? ORANGE : BORDER)
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: jonahScope?.id === p.id ? ORANGE2 : TEXT }}>{p.id}</span>
+              <span style={{ fontSize: 11, color: MUTED, marginLeft: 8 }}>{p.side} · {p.condition}</span>
+            </div>
+          ))}
+        </div>}
+
+        <Btn variant="primary" onClick={askJonah}
+          disabled={jonahLoading || !jonahMode || ((jonahMode === "session" || jonahMode === "pallet") && !jonahScope)}
+          style={{ marginBottom: 0 }}>
+          {jonahLoading ? "Jonah is thinking..." : "Ask Jonah"}
+        </Btn>
+
+        {jonahError && <div style={{ fontSize: 12, color: RED, marginTop: 8 }}>{jonahError}</div>}
+
+        {jonahResponse && <div style={{ marginTop: 12, background: SURFACE, borderRadius: 8, padding: "14px 16px", border: "1px solid " + BORDER }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: ORANGE, marginBottom: 10 }}>Jonah says:</div>
+          <div style={{ fontSize: 13, color: TEXT, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{jonahResponse}</div>
+        </div>}
       </div>
 
       {/* Quick stats */}
