@@ -691,46 +691,121 @@ function DockTab({ settings }) {
 
 // ── History Tab ───────────────────────────────────────────
 function HistoryTab() {
-  const [ddSessions] = useStorage("sessions_DD", []);
-  const [fzSessions] = useStorage("sessions_FZ", []);
-  const [dockSessions] = useStorage("dock_sessions", []);
-  const allPallets = [
-    ...ddSessions.flatMap(s => s.pallets.map(p => ({ ...p, side: "DD", condition: s.condition }))),
-    ...fzSessions.flatMap(s => s.pallets.map(p => ({ ...p, side: "FZ", condition: s.condition }))),
-  ].sort((a, b) => (b.endTime || 0) - (a.endTime || 0));
+  const [ddSessions, setDdSessions] = useStorage("sessions_DD", []);
+  const [fzSessions, setFzSessions] = useStorage("sessions_FZ", []);
+  const [dockSessions, setDockSessions] = useStorage("dock_sessions", []);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [activeTab, setActiveTab] = useState("sessions");
+
   const totalTime = (p) => { const v = Object.values(p.taps || {}); return v.length < 2 ? null : Math.max(...v) - Math.min(...v); };
 
-  return <div>
-    <SLabel mt={4}>Pallet Log ({allPallets.length})</SLabel>
-    {allPallets.length === 0 && <div style={{ color: MUTED, fontSize: 13, padding: "24px 0", textAlign: "center" }}>No observations yet.</div>}
-    {allPallets.slice(0, 30).map((p, i) => <Card key={i} style={{ borderLeft: `3px solid ${p.coldChainFlag ? RED : p.complete && !p.rejected ? GREEN : BORDER}` }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: ORANGE2, letterSpacing: 0.5 }}>{p.id}</span>
-        <div style={{ display: "flex", gap: 5 }}>
+  const allSessions = [
+    ...ddSessions.map(s => ({ ...s, sideLabel: "DD" })),
+    ...fzSessions.map(s => ({ ...s, sideLabel: "FZ" })),
+  ].sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
 
-          {p.rejected && <Chip label="Rejected" color="red" />}
-          {p.coldChainFlag && <Chip label="Cold Flag" color="red" />}
-        </div>
-      </div>
-      <div style={{ fontSize: 12, color: MUTED }}>{p.condition} · {Object.keys(p.taps || {}).length} nodes · {fmt(totalTime(p))}</div>
-      {p.endTime && <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>{new Date(p.endTime).toLocaleString()}</div>}
-    </Card>)}
-    <Hr />
-    <SLabel>Dock Sessions ({dockSessions.length})</SLabel>
-    {dockSessions.length === 0 && <div style={{ color: MUTED, fontSize: 13, padding: "12px 0" }}>No dock sessions yet.</div>}
-    {dockSessions.slice(-10).reverse().map(s => <Card key={s.id}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: ORANGE2 }}>{s.id}</span>
-        <Chip label={s.meta.side} color={s.meta.side === "FZ" ? "blue" : "orange"} />
-      </div>
-      <div style={{ fontSize: 12, color: MUTED }}>Door {s.meta.door} · {s.meta.people} people · {s.palletCount} pallets</div>
-      {s.manHrsPerPallet != null && <div style={{ fontSize: 12, color: GREEN, marginTop: 4 }}>{s.manHrsPerPallet.toFixed(3)} man-hrs/pallet · {s.manHrsTotal?.toFixed(2)} total</div>}
-      {s.meta.desc && <div style={{ fontSize: 11, color: FAINT, marginTop: 4 }}>{s.meta.desc}</div>}
-    </Card>)}
+  const deleteSession = (session) => {
+    if (session.sideLabel === "DD") setDdSessions(prev => prev.filter(s => s.id !== session.id));
+    else setFzSessions(prev => prev.filter(s => s.id !== session.id));
+    setConfirmDelete(null);
+  };
+
+  const deletePallet = (session, palletId) => {
+    const updater = prev => prev.map(s => s.id === session.id
+      ? { ...s, pallets: s.pallets.filter(p => p.id !== palletId) } : s);
+    if (session.sideLabel === "DD") setDdSessions(updater);
+    else setFzSessions(updater);
+    setConfirmDelete(null);
+  };
+
+  const deleteDockSession = (id) => {
+    setDockSessions(prev => prev.filter(s => s.id !== id));
+    setConfirmDelete(null);
+  };
+
+  return <div>
+    {confirmDelete?.type === "session" && <Confirm
+      title="Delete Session?"
+      body={"Permanently delete session " + confirmDelete.session.id + " and all " + (confirmDelete.session.pallets?.length || 0) + " pallets in it?"}
+      yesLabel="Delete Session" noLabel="Cancel"
+      onYes={() => deleteSession(confirmDelete.session)} onNo={() => setConfirmDelete(null)} />}
+    {confirmDelete?.type === "pallet" && <Confirm
+      title="Delete Pallet?"
+      body={"Permanently delete observation " + confirmDelete.palletId + "?"}
+      yesLabel="Delete Pallet" noLabel="Cancel"
+      onYes={() => deletePallet(confirmDelete.session, confirmDelete.palletId)} onNo={() => setConfirmDelete(null)} />}
+    {confirmDelete?.type === "dock" && <Confirm
+      title="Delete Dock Session?"
+      body={"Permanently delete dock session " + confirmDelete.id + "?"}
+      yesLabel="Delete" noLabel="Cancel"
+      onYes={() => deleteDockSession(confirmDelete.id)} onNo={() => setConfirmDelete(null)} />}
+
+    <div style={{ display: "flex", gap: 6, marginTop: 16, marginBottom: 16 }}>
+      {["sessions","dock"].map(t => (
+        <button key={t} onClick={() => setActiveTab(t)} style={{
+          padding: "8px 18px", fontSize: 12, fontWeight: 700, fontFamily: "inherit", borderRadius: 6, cursor: "pointer",
+          border: "1px solid " + (activeTab === t ? ORANGE : BORDER),
+          background: activeTab === t ? "rgba(232,118,10,0.15)" : CARD,
+          color: activeTab === t ? ORANGE2 : MUTED }}>
+          {t === "sessions" ? "Observer Sessions" : "Dock Sessions"}
+        </button>
+      ))}
+    </div>
+
+    {activeTab === "sessions" && <>
+      <SLabel mt={0}>Sessions ({allSessions.length})</SLabel>
+      {allSessions.length === 0 && <div style={{ color: MUTED, fontSize: 13, padding: "24px 0", textAlign: "center" }}>No sessions yet.</div>}
+      {allSessions.map(s => (
+        <Card key={s.id} style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Chip label={s.sideLabel} color={s.sideLabel === "DD" ? "orange" : "blue"} />
+              <span style={{ fontSize: 12, fontWeight: 700, color: ORANGE2 }}>{s.id}</span>
+            </div>
+            <Btn variant="danger" small onClick={() => setConfirmDelete({ type: "session", session: s })}
+              style={{ width: "auto", padding: "4px 10px", marginBottom: 0, fontSize: 11 }}>Delete Session</Btn>
+          </div>
+          <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>{s.condition} · {s.pallets?.length || 0} pallets · {new Date(s.startTime).toLocaleDateString()}</div>
+          {s.pallets?.map(p => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "8px 10px", background: SURFACE, borderRadius: 6, marginBottom: 4 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: TEXT }}>{p.id}</div>
+                <div style={{ fontSize: 10, color: MUTED }}>{Object.keys(p.taps || {}).length} nodes · {fmt(totalTime(p))}{p.rejected ? " · REJECTED" : ""}{p.coldChainFlag ? " · COLD FLAG" : ""}</div>
+              </div>
+              <button onClick={() => setConfirmDelete({ type: "pallet", session: s, palletId: p.id })}
+                style={{ background: "transparent", border: "1px solid " + BORDER, color: MUTED,
+                  fontSize: 10, fontWeight: 700, padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontFamily: "inherit" }}>
+                Delete
+              </button>
+            </div>
+          ))}
+        </Card>
+      ))}
+    </>}
+
+    {activeTab === "dock" && <>
+      <SLabel mt={0}>Dock Sessions ({dockSessions.length})</SLabel>
+      {dockSessions.length === 0 && <div style={{ color: MUTED, fontSize: 13, padding: "12px 0" }}>No dock sessions yet.</div>}
+      {dockSessions.slice().reverse().map(s => (
+        <Card key={s.id}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Chip label={s.meta.side} color={s.meta.side === "FZ" ? "blue" : "orange"} />
+              <span style={{ fontSize: 13, fontWeight: 700, color: ORANGE2 }}>{s.id}</span>
+            </div>
+            <Btn variant="danger" small onClick={() => setConfirmDelete({ type: "dock", id: s.id })}
+              style={{ width: "auto", padding: "4px 10px", marginBottom: 0, fontSize: 11 }}>Delete</Btn>
+          </div>
+          <div style={{ fontSize: 12, color: MUTED }}>Door {s.meta.door} · {s.meta.people} people · {s.palletCount} pallets</div>
+          {s.manHrsPerPallet != null && <div style={{ fontSize: 12, color: GREEN, marginTop: 4 }}>{s.manHrsPerPallet.toFixed(3)} man-hrs/pallet · {s.manHrsTotal?.toFixed(2)} total</div>}
+          {s.meta.desc && <div style={{ fontSize: 11, color: FAINT, marginTop: 4 }}>{s.meta.desc}</div>}
+        </Card>
+      ))}
+    </>}
     <div style={{ height: 24 }} />
   </div>;
 }
-
 // ── Settings Tab ──────────────────────────────────────────
 function SettingsTab({ settings, setSettings }) {
   const [ddSessions] = useStorage("sessions_DD", []);
