@@ -414,6 +414,11 @@ function ObserverTab({ side, nodes, settings }) {
   // Determine if a lane option is locked out
   const isLaneLocked = (optId) => {
     if (!lockedLane) return false;
+    // VL options are never locked out — lane resets at conformity and re-locks when VL is tapped
+    if (optId.startsWith("vl")) {
+      const anyVLTapped = pallet && Object.keys(pallet.taps).some(k => k.startsWith("vl"));
+      if (!anyVLTapped) return false; // no VL tapped yet — both VLs available
+    }
     const optLane = laneMap[optId];
     return optLane && optLane !== lockedLane;
   };
@@ -423,9 +428,19 @@ function ObserverTab({ side, nodes, settings }) {
     const ts = Date.now();
     const prevEntries = Object.entries(p.taps).sort((a,b)=>a[1]-b[1]);
     const updated = {...p,taps:{...p.taps,[key]:ts}};
-    // Lock lane if this is a lane-specific node
+    // Lane lock logic:
+    // - Tapping SG or AMTU locks the lane
+    // - Tapping Conformity RESETS the lane lock (both VLs become available)
+    // - Tapping a VL re-locks the lane for SC and SRM
     const nodeLane = laneMap[key];
-    if (nodeLane && !lockedLane) setLockedLane(nodeLane);
+    const conformityK = side === "DD" ? "dd_conformity" : "fz_conformity";
+    if (key === conformityK) {
+      setLockedLane(null); // free the lane at conformity
+    } else if (nodeLane && key.startsWith("vl")) {
+      setLockedLane(nodeLane); // re-lock once VL is chosen
+    } else if (nodeLane && !lockedLane) {
+      setLockedLane(nodeLane); // initial lock on SG/AMTU
+    }
     // Lock SC if this is a shuttle car tap
     if (key.startsWith("sc")) setLockedSC(key);
 
