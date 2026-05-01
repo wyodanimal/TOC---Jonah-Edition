@@ -1068,7 +1068,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
     setJonahLoading(true); setJonahResponse(null); setJonahError(null);
     try {
       const payload = {
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-5",
         max_tokens: 1000,
         system: SYSTEM_CONTEXT,
         messages: [{ role: "user", content: dataStr }]
