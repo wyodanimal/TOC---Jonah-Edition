@@ -1296,4 +1296,4 @@ export default function App() {
       {tab==="settings"&&<SettingsTab settings={settings} setSettings={setSettings}/>}
     </div>
   </div>;
-}
+} 
