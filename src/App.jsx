@@ -1078,7 +1078,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": "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",
+          "x-api-key": "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",
           "anthropic-version": "2023-06-01"
         },
         body: JSON.stringify(payload)
