@@ -1067,22 +1067,36 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
     if (!dataStr) return;
     setJonahLoading(true); setJonahResponse(null); setJonahError(null);
     try {
-      const response = await fetch(APPS_SCRIPT_URL, {
+      const payload = {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: SYSTEM_CONTEXT,
+        messages: [{ role: "user", content: dataStr }]
+      };
+      const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent("https://api.anthropic.com/v1/messages");
+      const response = await fetch(proxyUrl, {
         method: "POST",
-        body: JSON.stringify({
-          type: "jonah",
-          system: SYSTEM_CONTEXT,
-          prompt: dataStr
-        })
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": "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",
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify(payload)
       });
       const data = await response.json();
-      if (data.status === "ok" && data.response) {
-        setJonahResponse(data.response);
+      let text = "";
+      if (data.content && Array.isArray(data.content)) {
+        text = data.content.map(c => c.text || "").join("").trim();
+      } else if (data.error) {
+        text = "Error: " + (data.error.message || JSON.stringify(data.error));
+      }
+      if (text) {
+        setJonahResponse(text);
       } else {
-        setJonahError("Jonah error: " + (data.message || JSON.stringify(data)));
+        setJonahError("No response. Try again.");
       }
     } catch(e) {
-      setJonahError("Could not reach Jonah. Check your connection.");
+      setJonahError("Could not reach Jonah: " + e.message);
     }
     setJonahLoading(false);
   };
