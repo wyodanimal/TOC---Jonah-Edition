@@ -74,7 +74,7 @@ const NODE_SHORT = {
   srm:"SRM",
 };
 
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzofUFNzOAUO6lRZBw_9yVCd1qmDT0brb0Ylf-bJSff7EZ2qosvs7oxHOc0Qch-fgHg/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwD8dQS4mOvS7IzsbbXzKTr-VwF7PML3Zh8q5RLX_oJtMG-reRD7Z9AEvYwtVJ0rdU/exec";
 
 // ── Colors ────────────────────────────────────────────────
 const BG      = "#1a1f2e";
