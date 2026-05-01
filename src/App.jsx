@@ -73,7 +73,7 @@ const NODE_SHORT = {
   sc5800:"SC58", sc5700:"SC57", sc2800:"SC28", sc2700:"SC27",
   srm:"SRM",
 };
-
+const ANTHROPIC_API_KEY = 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;
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzofUFNzOAUO6lRZBw_9yVCd1qmDT0brb0Ylf-bJSff7EZ2qosvs7oxHOc0Qch-fgHg/exec";
 
 // ── Colors ────────────────────────────────────────────────
@@ -1069,7 +1069,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
     try {
       const response = await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",
-        headers:{"Content-Type":"application/json"},
+        headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:SYSTEM_CONTEXT,messages:[{role:"user",content:dataStr}]})
       });
       const data = await response.json();
