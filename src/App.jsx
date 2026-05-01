@@ -1079,7 +1079,8 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
         headers: {
           "Content-Type": "application/json",
           "x-api-key": ["sk-ant-api03-aWFrMh-gc6eeMSASd","fteZKxXuNEYJDAnx_v5oDJDPSEqOChyBdi-mTxi6RCyGKPBfYmYHB-QuSytzFNXSq9LdA-2dAmQwAA"].join(""),
-          "anthropic-version": "2023-06-01"
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify(payload)
       });
