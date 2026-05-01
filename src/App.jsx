@@ -1078,7 +1078,16 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:SYSTEM_CONTEXT,messages:[{role:"user",content:dataStr}]})
       });
       const data = await response.json();
-      const text = data.content?.map(c=>c.text||"").join("")||"No response received.";
+      console.log("Jonah response:", JSON.stringify(data));
+      let text = "No response received.";
+      if (data.content && Array.isArray(data.content)) {
+        text = data.content.map(c => c.text || "").join("").trim();
+      } else if (data.error) {
+        text = "Error: " + (data.error.message || JSON.stringify(data.error));
+      } else if (typeof data === "string") {
+        text = data;
+      }
+      if (!text) text = "No response received. Raw: " + JSON.stringify(data).slice(0, 200);
       setJonahResponse(text);
     } catch(e) {
       setJonahError("Could not reach Jonah. Check your connection.");
@@ -1296,4 +1305,4 @@ export default function App() {
       {tab==="settings"&&<SettingsTab settings={settings} setSettings={setSettings}/>}
     </div>
   </div>;
-} 
+}
