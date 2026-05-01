@@ -1067,28 +1067,20 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
     if (!dataStr) return;
     setJonahLoading(true); setJonahResponse(null); setJonahError(null);
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "x-api-key":"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",
-          "anthropic-version":"2023-06-01",
-          "anthropic-dangerous-direct-browser-access":"true"
-        },
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:SYSTEM_CONTEXT,messages:[{role:"user",content:dataStr}]})
+      const response = await fetch(APPS_SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          type: "jonah",
+          system: SYSTEM_CONTEXT,
+          prompt: dataStr
+        })
       });
       const data = await response.json();
-      console.log("Jonah response:", JSON.stringify(data));
-      let text = "No response received.";
-      if (data.content && Array.isArray(data.content)) {
-        text = data.content.map(c => c.text || "").join("").trim();
-      } else if (data.error) {
-        text = "Error: " + (data.error.message || JSON.stringify(data.error));
-      } else if (typeof data === "string") {
-        text = data;
+      if (data.status === "ok" && data.response) {
+        setJonahResponse(data.response);
+      } else {
+        setJonahError("Jonah error: " + (data.message || JSON.stringify(data)));
       }
-      if (!text) text = "No response received. Raw: " + JSON.stringify(data).slice(0, 200);
-      setJonahResponse(text);
     } catch(e) {
       setJonahError("Could not reach Jonah. Check your connection.");
     }
