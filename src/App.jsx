@@ -310,7 +310,7 @@ function SRMPicker({ srms, onSelect, onCancel }) {
       <div style={{fontSize:17,fontWeight:700,color:TEXT,marginBottom:6}}>Which SRM?</div>
       <div style={{fontSize:13,color:MUTED,marginBottom:20}}>Select the SRM that received this pallet.</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
-        {srms.map(n => <button key={n} onClick={() => onSelect(n)} style={{background:CARD,border:"2px solid "+BORDER,color:TEXT,borderRadius:8,padding:"16px 8px",fontSize:16,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>{n}</button>)}
+        {[...srms].sort((a,b)=>b-a).map(n => <button key={n} onClick={() => onSelect(n)} style={{background:CARD,border:"2px solid "+BORDER,color:TEXT,borderRadius:8,padding:"16px 8px",fontSize:16,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>{n}</button>)}
       </div>
       <Btn variant="ghost" small onClick={onCancel}>Cancel</Btn>
     </div>
@@ -455,13 +455,29 @@ function ObserverTab({ side, nodes, settings }) {
   };
 
   const isLaneLocked = (optId) => {
-    if (!lockedLane) return false;
+    // AMTU: locked by SG selection permanently
+    if (optId.startsWith("amtu")) {
+      const sgTapped = pallet && Object.keys(pallet.taps).find(k => k.startsWith("sg"));
+      if (!sgTapped) return false;
+      const sgLane = laneMap[sgTapped];
+      const optLane = laneMap[optId];
+      return optLane && optLane !== sgLane;
+    }
+    // VL: free until a VL is tapped, then lock opposite lane
     if (optId.startsWith("vl")) {
       const anyVLTapped = pallet && Object.keys(pallet.taps).some(k => k.startsWith("vl"));
       if (!anyVLTapped) return false;
+      if (!lockedLane) return false;
+      const optLane = laneMap[optId];
+      return optLane && optLane !== lockedLane;
     }
-    const optLane = laneMap[optId];
-    return optLane && optLane !== lockedLane;
+    // SC: locked by VL selection
+    if (optId.startsWith("sc")) {
+      if (!lockedLane) return false;
+      const optLane = laneMap[optId];
+      return optLane && optLane !== lockedLane;
+    }
+    return false;
   };
 
   const doTap = (key, basePallet) => {
@@ -472,12 +488,11 @@ function ObserverTab({ side, nodes, settings }) {
     const nodeLane = laneMap[key];
     const conformityK = side === "DD" ? "dd_conformity" : "fz_conformity";
     if (key === conformityK) {
-      setLockedLane(null);
+      setLockedLane(null); // reset VL/SC lock at conformity, but AMTU stays locked via SG tap
     } else if (nodeLane && key.startsWith("vl")) {
-      setLockedLane(nodeLane);
-    } else if (nodeLane && !lockedLane) {
-      setLockedLane(nodeLane);
+      setLockedLane(nodeLane); // VL tap locks SC
     }
+    // SG tap does NOT set lockedLane — AMTU locking handled by isLaneLocked via pallet.taps
     if (key.startsWith("sc")) {
       setLockedSC(key);
       // Record tap first, then ask pairing question
@@ -694,7 +709,7 @@ function ObserverTab({ side, nodes, settings }) {
             };
             return <div key={node.id}>
               {arrow}
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,alignItems:"start"}}>
                 <div>{laneAOpts.map(renderSGBtn)}</div>
                 <div>{laneBOpts.map(renderSGBtn)}</div>
               </div>
@@ -702,7 +717,7 @@ function ObserverTab({ side, nodes, settings }) {
           }
           return <div key={node.id}>
             {arrow}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,alignItems:"start"}}>
               {node.options.map(opt => {
                 const tapped = hasTap(opt.id);
                 const locked = isLaneLocked(opt.id);
@@ -746,12 +761,13 @@ function ObserverTab({ side, nodes, settings }) {
 function ConformityTab() {
   const [conformitySessions, setConformitySessions] = useStorage("conformity_sessions", []);
   const [side, setSide] = useState(null);
-  const [mode, setMode] = useState(null); // "uncontested" | "constrained"
+  const [mode, setMode] = useState(null);
   const [running, setRunning] = useState(false);
   const [startTs, setStartTs] = useState(null);
   const [now, setNow] = useState(Date.now());
-  const [palletCount, setPalletCount] = useState("");
+  const [clickCount, setClickCount] = useState(0);
   const [showResult, setShowResult] = useState(null);
+  const [lastClickTs, setLastClickTs] = useState(null);
 
   useEffect(() => {
     if (!running) return;
@@ -760,62 +776,51 @@ function ConformityTab() {
   }, [running]);
 
   const elapsed = running && startTs ? now - startTs : 0;
+  const liveRate = clickCount > 0 && elapsed > 0 ? (clickCount / (elapsed / 3600000)) : null;
 
   const handleStart = () => {
     setStartTs(Date.now());
     setRunning(true);
-    setPalletCount("");
+    setClickCount(0);
+    setLastClickTs(null);
     setShowResult(null);
   };
 
-  const handleStop = () => {
-    setRunning(false);
+  const handleClick = () => {
+    if (!running) return;
+    setClickCount(c => c + 1);
+    setLastClickTs(Date.now());
   };
 
+  const handleStop = () => setRunning(false);
+
   const handleSave = () => {
-    if (!startTs || !palletCount || isNaN(Number(palletCount))) return;
+    if (!startTs || clickCount === 0) return;
     const endTs = Date.now();
     const durationMs = endTs - startTs;
-    const count = Number(palletCount);
-    const palletsPerHour = count / (durationMs / 3600000);
-    const palletsPerMin = count / (durationMs / 60000);
+    const palletsPerHour = clickCount / (durationMs / 3600000);
+    const palletsPerMin = clickCount / (durationMs / 60000);
     const session = {
       id: "CF" + Date.now().toString(36).toUpperCase().slice(-5),
-      ts: endTs,
-      side,
-      mode,
-      startTs,
-      endTs,
-      durationMs,
-      palletCount: count,
-      palletsPerHour,
-      palletsPerMin,
+      ts: endTs, side, mode, startTs, endTs, durationMs,
+      palletCount: clickCount, palletsPerHour, palletsPerMin,
     };
     setConformitySessions(prev => [...prev, session]);
     setShowResult(session);
     setStartTs(null);
-    setPalletCount("");
+    setClickCount(0);
   };
 
   const reset = () => {
-    setRunning(false);
-    setStartTs(null);
-    setPalletCount("");
-    setShowResult(null);
-    setSide(null);
-    setMode(null);
+    setRunning(false); setStartTs(null); setClickCount(0);
+    setShowResult(null); setSide(null); setMode(null); setLastClickTs(null);
   };
 
-  const inp = {width:"100%",background:CARD,border:"1px solid "+BORDER,color:TEXT,fontFamily:"inherit",fontSize:20,fontWeight:700,padding:"14px 12px",borderRadius:8,outline:"none",marginBottom:12,boxSizing:"border-box",textAlign:"center"};
-
-  // Group sessions for comparison
   const ddSessions = conformitySessions.filter(s => s.side === "DD");
   const fzSessions = conformitySessions.filter(s => s.side === "FZ");
-  const avgRate = (arr, m) => {
-    const filtered = arr.filter(s => s.mode === m);
-    if (!filtered.length) return null;
-    return filtered.reduce((a,s) => a + s.palletsPerHour, 0) / filtered.length;
-  };
+  const avgRate = (arr, m) => { const f=arr.filter(s=>s.mode===m); if(!f.length)return null; return f.reduce((a,s)=>a+s.palletsPerHour,0)/f.length; };
+  const maxRate = (arr, m) => { const f=arr.filter(s=>s.mode===m); if(!f.length)return null; return Math.max(...f.map(s=>s.palletsPerHour)); };
+  const minRate = (arr, m) => { const f=arr.filter(s=>s.mode===m); if(!f.length)return null; return Math.min(...f.map(s=>s.palletsPerHour)); };
 
   return <div>
     <SLabel mt={4}>Conformity Throughput Counter</SLabel>
@@ -824,7 +829,7 @@ function ConformityTab() {
       <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:GREEN,marginBottom:8}}>Result Saved</div>
       <div style={{fontSize:32,fontWeight:700,color:GREEN,marginBottom:4}}>{showResult.palletsPerHour.toFixed(1)} <span style={{fontSize:16,color:MUTED}}>pallets/hr</span></div>
       <div style={{fontSize:14,color:ORANGE2,marginBottom:4}}>{showResult.palletsPerMin.toFixed(2)} pallets/min</div>
-      <div style={{fontSize:12,color:MUTED}}>{showResult.side} · {showResult.mode === "uncontested" ? "Uncontested" : "Constrained"} · {showResult.palletCount} pallets · {fmt(showResult.durationMs)}</div>
+      <div style={{fontSize:12,color:MUTED}}>{showResult.side} · {showResult.mode==="uncontested"?"Uncontested":"Constrained"} · {showResult.palletCount} pallets · {fmt(showResult.durationMs)}</div>
       <Btn variant="outline" small onClick={reset} style={{marginTop:12,marginBottom:0}}>New Measurement</Btn>
     </div>}
 
@@ -832,66 +837,58 @@ function ConformityTab() {
       {!running && !startTs && <>
         <SLabel>System</SLabel>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:4}}>
-          {["DD","FZ"].map(s => <Btn key={s} small variant={side===s?"active":"default"} onClick={() => setSide(s)}>{s==="DD"?"Dairy/Deli":"Freezer"}</Btn>)}
+          {["DD","FZ"].map(s => <Btn key={s} small variant={side===s?"active":"default"} onClick={()=>setSide(s)}>{s==="DD"?"Dairy/Deli":"Freezer"}</Btn>)}
         </div>
         <SLabel>Mode</SLabel>
-        <Btn variant={mode==="uncontested"?"active":"default"} onClick={() => setMode("uncontested")}>
-          Uncontested — Downstream Clear
-        </Btn>
+        <Btn variant={mode==="uncontested"?"active":"default"} onClick={()=>setMode("uncontested")}>Uncontested — Downstream Clear</Btn>
         <div style={{fontSize:11,color:MUTED,marginBottom:12,marginTop:-4,paddingLeft:4}}>True machine speed — VLs and SCs are clear</div>
-        <Btn variant={mode==="constrained"?"active":"default"} onClick={() => setMode("constrained")}>
-          Constrained — Downstream Loading
-        </Btn>
+        <Btn variant={mode==="constrained"?"active":"default"} onClick={()=>setMode("constrained")}>Constrained — Downstream Loading</Btn>
         <div style={{fontSize:11,color:MUTED,marginBottom:16,marginTop:-4,paddingLeft:4}}>Running with freight downstream, conformity throttled by VL/SC</div>
         <Btn variant="primary" disabled={!side||!mode} onClick={handleStart}>Start Timer</Btn>
       </>}
 
-      {(running || (startTs && !running)) && <>
+      {running && <>
+        <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:10,padding:"16px",marginBottom:12,textAlign:"center"}}>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:side==="DD"?ORANGE:BLUE,marginBottom:6}}>{side} · {mode==="uncontested"?"Uncontested":"Constrained"}</div>
+          <div style={{fontSize:40,fontWeight:700,color:ORANGE2,fontFamily:"monospace",letterSpacing:-1}}>{fmt(elapsed)}</div>
+          <div style={{fontSize:48,fontWeight:900,color:GREEN,margin:"8px 0"}}>{clickCount}</div>
+          <div style={{fontSize:12,color:MUTED,marginBottom:12}}>pallets counted{liveRate?` · ${liveRate.toFixed(1)}/hr live`:""}</div>
+        </div>
+        <button onClick={handleClick} style={{display:"block",width:"100%",background:"rgba(76,175,125,0.15)",border:"3px solid "+GREEN,color:GREEN,borderRadius:14,padding:"28px 12px",fontSize:20,fontWeight:900,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:12,letterSpacing:0.5,WebkitTapHighlightColor:"transparent"}}>
+          TAP — Pallet Through ✓
+        </button>
+        <button onClick={handleStop} style={{display:"block",width:"100%",background:RED,color:"#fff",border:"none",borderRadius:10,padding:"16px 32px",fontSize:16,fontWeight:700,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:8}}>Stop Timer</button>
+        <Btn variant="ghost" small onClick={reset}>Cancel</Btn>
+      </>}
+
+      {!running && startTs && <>
         <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:10,padding:"16px",marginBottom:16,textAlign:"center"}}>
           <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:side==="DD"?ORANGE:BLUE,marginBottom:6}}>{side} · {mode==="uncontested"?"Uncontested":"Constrained"}</div>
-          <div style={{fontSize:48,fontWeight:700,color:running?ORANGE2:MUTED,fontFamily:"monospace",letterSpacing:-1}}>{fmt(running ? elapsed : (startTs ? Date.now()-startTs : 0))}</div>
-          {running
-            ? <button onClick={handleStop} style={{marginTop:16,background:RED,color:"#fff",border:"none",borderRadius:10,padding:"16px 32px",fontSize:16,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>Stop Timer</button>
-            : <div style={{fontSize:13,color:GREEN,marginTop:8,fontWeight:700}}>Timer stopped — enter pallet count below</div>
-          }
+          <div style={{fontSize:32,fontWeight:700,color:GREEN}}>{clickCount} pallets</div>
+          <div style={{fontSize:14,color:ORANGE2,marginTop:4}}>{((clickCount)/((Date.now()-startTs)/3600000)).toFixed(1)} pallets/hr · {fmt(Date.now()-startTs)}</div>
+          <div style={{fontSize:13,color:GREEN,marginTop:8,fontWeight:700}}>Timer stopped — review and save</div>
         </div>
-
-        {!running && startTs && <>
-          <SLabel mt={0}>How many pallets went through?</SLabel>
-          <input
-            type="number"
-            inputMode="numeric"
-            placeholder="0"
-            value={palletCount}
-            onChange={e => setPalletCount(e.target.value)}
-            style={inp}
-          />
-          {palletCount && !isNaN(Number(palletCount)) && Number(palletCount) > 0 && <>
-            <div style={{background:"rgba(232,118,10,0.08)",border:"1px solid "+ORANGE,borderRadius:8,padding:"12px 16px",marginBottom:12,textAlign:"center"}}>
-              <div style={{fontSize:28,fontWeight:700,color:ORANGE2}}>{(Number(palletCount)/((Date.now()-startTs)/3600000)).toFixed(1)} <span style={{fontSize:14,color:MUTED}}>pallets/hr</span></div>
-              <div style={{fontSize:13,color:MUTED,marginTop:2}}>{(Number(palletCount)/((Date.now()-startTs)/60000)).toFixed(2)} pallets/min</div>
-            </div>
-          </>}
-          <Btn variant="success" disabled={!palletCount||isNaN(Number(palletCount))||Number(palletCount)<=0} onClick={handleSave}>Save Result</Btn>
-          <Btn variant="ghost" small onClick={reset}>Cancel</Btn>
-        </>}
+        <Btn variant="success" disabled={clickCount===0} onClick={handleSave}>Save Result</Btn>
+        <Btn variant="ghost" small onClick={reset}>Cancel</Btn>
       </>}
     </>}
 
     {conformitySessions.length > 0 && <>
       <Hr/>
-      <SLabel>Rate Comparison</SLabel>
+      <SLabel>Rate Summary</SLabel>
       {["DD","FZ"].map(s => {
-        const uc = avgRate(s==="DD"?ddSessions:fzSessions, "uncontested");
-        const co = avgRate(s==="DD"?ddSessions:fzSessions, "constrained");
-        if (!uc && !co) return null;
+        const arr = s==="DD"?ddSessions:fzSessions;
+        const uc=avgRate(arr,"uncontested"); const co=avgRate(arr,"constrained");
+        const ucMax=maxRate(arr,"uncontested"); const coMax=maxRate(arr,"constrained");
+        const ucMin=minRate(arr,"uncontested"); const coMin=minRate(arr,"constrained");
+        if(!uc&&!co)return null;
         return <Card key={s}>
           <div style={{fontSize:12,fontWeight:700,color:s==="DD"?ORANGE2:BLUE,marginBottom:10}}>{s==="DD"?"Dairy/Deli":"Freezer"} Conformity</div>
           <StatPair
-            left={uc?{label:"Uncontested Avg",value:uc.toFixed(1),color:GREEN,sub:"pallets/hr"}:{label:"Uncontested",value:"--",color:MUTED}}
-            right={co?{label:"Constrained Avg",value:co.toFixed(1),color:ORANGE2,sub:"pallets/hr"}:{label:"Constrained",value:"--",color:MUTED}}
+            left={uc?{label:"Uncontested Avg",value:uc.toFixed(1),color:GREEN,sub:`min ${ucMin.toFixed(1)} · max ${ucMax.toFixed(1)}`}:{label:"Uncontested",value:"--",color:MUTED}}
+            right={co?{label:"Constrained Avg",value:co.toFixed(1),color:ORANGE2,sub:`min ${coMin.toFixed(1)} · max ${coMax.toFixed(1)}`}:{label:"Constrained",value:"--",color:MUTED}}
           />
-          {uc&&co&&<div style={{fontSize:12,color:MUTED}}>Downstream tax: <span style={{color:RED,fontWeight:700}}>{(uc-co).toFixed(1)} pallets/hr ({(((uc-co)/uc)*100).toFixed(0)}% loss)</span></div>}
+          {uc&&co&&<div style={{fontSize:12,color:MUTED}}>Downstream tax: <span style={{color:RED,fontWeight:700}}>{(uc-co).toFixed(1)}/hr ({(((uc-co)/uc)*100).toFixed(0)}% loss)</span></div>}
         </Card>;
       })}
       <SLabel>Recent Sessions</SLabel>
@@ -1057,7 +1054,7 @@ function UnloadingTab({ settings }) {
         <span style={{fontSize:13,fontWeight:700,color:TEXT}}>Pallet {p.id}</span>
         {p.floorTs&&p.inductTs&&<span style={{fontSize:13,fontWeight:700,color:GREEN}}>{fmt(p.inductTs-p.floorTs)}</span>}
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,alignItems:"start"}}>
         <Btn small variant={p.floorTs?"success":"primary"} style={{marginBottom:0}}
           onClick={()=>{if(!batchStart)setBatchStart(Date.now());setBatch(prev=>{const n=[...prev];n[i]={...n[i],floorTs:n[i].floorTs||Date.now()};return n;});}}>
           {p.floorTs?"Floor ✓":"Floor"}
@@ -1415,6 +1412,12 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
     rows.push([]);rows.push(["--- FDD RECEIVING SESSIONS ---"]);
     rows.push(["Session ID","Side","Door","People","Mode","Pallets","Elapsed (min)","Man-Hrs Total","Man-Hrs Per Pallet","Load Description","Date"]);
     dockSessions.forEach(s=>{rows.push([s.id||"",s.meta?.side||"",s.meta?.door||"",s.meta?.people||"",s.mode||"",s.palletCount||"",s.sessionElapsed?(s.sessionElapsed/60000).toFixed(2):"",s.manHrsTotal?s.manHrsTotal.toFixed(3):"",s.manHrsPerPallet?s.manHrsPerPallet.toFixed(3):"",s.meta?.desc||"",s.ts?new Date(s.ts).toISOString():""]);});
+    const conformitySessions = (() => { try { const r=localStorage.getItem("conformity_sessions"); return r?JSON.parse(r):[]; } catch { return []; } })();
+    if(conformitySessions.length>0){
+      rows.push([]);rows.push(["--- CONFORMITY THROUGHPUT (CTC) SESSIONS ---"]);
+      rows.push(["Session ID","Side","Mode","Pallets Counted","Duration (min)","Pallets/Hr","Pallets/Min","Date"]);
+      conformitySessions.forEach(s=>{rows.push([s.id||"",s.side||"",s.mode||"",s.palletCount||"",s.durationMs?(s.durationMs/60000).toFixed(2):"",s.palletsPerHour?s.palletsPerHour.toFixed(2):"",s.palletsPerMin?s.palletsPerMin.toFixed(2):"",s.ts?new Date(s.ts).toISOString():""]);});
+    }
     const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,"'")+'"').join(",")).join(String.fromCharCode(10));
     const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);
     const a=document.createElement("a");a.href=url;a.download="jonah-export-"+new Date().toISOString().slice(0,10)+".csv";a.click();URL.revokeObjectURL(url);
@@ -1493,6 +1496,46 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       <span style={{fontSize:11,color:RED,fontWeight:700}}>Longest segment: {segData.reduce((a,b)=>(a.avg||0)>(b.avg||0)?a:b).label}</span>
       <span style={{fontSize:11,color:MUTED}}> — potential constraint</span>
     </div>}
+
+    <Hr/>
+    <SLabel>Induction Position Breakdown</SLabel>
+    {(()=>{
+      const sgKeys=sideView==="DD"?["sg4301","sg4311","sg4101","sg4111","sg4300","sg4100"]:["sg1301","sg1311","sg1101","sg1111","sg1300","sg1100"];
+      const sgLabels=sideView==="DD"?{sg4301:"SG 4301",sg4311:"SG 4311",sg4101:"SG 4101",sg4111:"SG 4111",sg4300:"SG 4300 (legacy)",sg4100:"SG 4100 (legacy)"}:{sg1301:"SG 1301",sg1311:"SG 1311",sg1101:"SG 1101",sg1111:"SG 1111",sg1300:"SG 1300 (legacy)",sg1100:"SG 1100 (legacy)"};
+      const counts={};
+      activePallets.forEach(p=>{const k=sgKeys.find(k=>p.taps&&p.taps[k]);if(k)counts[k]=(counts[k]||0)+1;});
+      const total=Object.values(counts).reduce((a,b)=>a+b,0);
+      if(total===0)return<div style={{color:MUTED,fontSize:12,marginBottom:12}}>No induction data yet.</div>;
+      return<div>{Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([k,n])=><div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid "+BORDER}}>
+        <span style={{fontSize:13,fontWeight:700,color:TEXT}}>{sgLabels[k]||k}</span>
+        <div style={{display:"flex",gap:12,alignItems:"center"}}>
+          <div style={{width:80,height:6,background:BORDER,borderRadius:3}}><div style={{height:6,width:(n/total*100)+"%",background:ORANGE,borderRadius:3}}/></div>
+          <span style={{fontSize:13,fontWeight:700,color:ORANGE2,minWidth:24,textAlign:"right"}}>{n}</span>
+          <span style={{fontSize:11,color:MUTED,minWidth:36,textAlign:"right"}}>{(n/total*100).toFixed(0)}%</span>
+        </div>
+      </div>)}</div>;
+    })()}
+
+    <Hr/>
+    <SLabel>Clean Runs vs Impeded</SLabel>
+    {(()=>{
+      const clean=activePallets.filter(p=>p.cleanRun);
+      const impeded=activePallets.filter(p=>!p.cleanRun&&Object.keys(p.taps||{}).length>2);
+      const cleanAvg=avg(clean.map(p=>totalTime(p)).filter(Boolean));
+      const impedAvg=avg(impeded.map(p=>totalTime(p)).filter(Boolean));
+      if(!clean.length&&!impeded.length)return<div style={{color:MUTED,fontSize:12,marginBottom:12}}>No data yet.</div>;
+      return<StatPair left={{label:"Clean Run Avg",value:fmtMin(cleanAvg),color:GREEN,sub:clean.length+" pallets"}} right={{label:"Impeded Avg",value:fmtMin(impedAvg),color:impedAvg&&cleanAvg&&impedAvg>cleanAvg?RED:ORANGE2,sub:impeded.length+" pallets"}}/>;
+    })()}
+
+    <SLabel>Paired vs Single at SC</SLabel>
+    {(()=>{
+      const paired=activePallets.filter(p=>p.pairedTravel==="Paired");
+      const single=activePallets.filter(p=>p.pairedTravel==="Single");
+      const pairedAvg=avg(paired.map(p=>totalTime(p)).filter(Boolean));
+      const singleAvg=avg(single.map(p=>totalTime(p)).filter(Boolean));
+      if(!paired.length&&!single.length)return<div style={{color:MUTED,fontSize:12,marginBottom:12}}>No pairing data yet.</div>;
+      return<StatPair left={{label:"Paired Avg",value:fmtMin(pairedAvg),color:GREEN,sub:paired.length+" pallets"}} right={{label:"Single Avg",value:fmtMin(singleAvg),color:MUTED,sub:single.length+" — SC wait expected"}}/>;
+    })()}
 
     <Hr/>
     <SLabel>SRM Load Distribution</SLabel>
@@ -1583,7 +1626,7 @@ export default function App() {
     {id:"dd",        label:"D/D"},
     {id:"fz",        label:"FZ"},
     {id:"unload",    label:<div style={{fontSize:10,lineHeight:1.2}}><div>FDD</div><div>REC</div></div>},
-    {id:"conformity",label:<div style={{fontSize:10,lineHeight:1.2}}><div>CONF</div><div>TPT</div></div>},
+    {id:"conformity",label:<div style={{fontSize:10,lineHeight:1.2}}><div>CONF</div><div>CTC</div></div>},
     {id:"history",   label:"Log"},
     {id:"summary",   label:"Sum"},
     {id:"settings",  label:"Set"},
