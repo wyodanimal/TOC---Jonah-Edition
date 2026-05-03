@@ -677,23 +677,26 @@ function ObserverTab({ side, nodes, settings }) {
           const isSGDD = side==="DD" && node.options?.some(o=>o.id.startsWith("sg43")||o.id.startsWith("sg41"));
           const isSGFZ = side==="FZ" && node.options?.some(o=>o.id.startsWith("sg13")||o.id.startsWith("sg11"));
           if (isSGDD || isSGFZ) {
+            // Any SG tapped = lock all others out
+            const anySGTapped = node.options.some(o => hasTap(o.id));
+            const laneAOpts = node.options.filter(o => o.lane === "A");
+            const laneBOpts = node.options.filter(o => o.lane === "B");
+            const renderSGBtn = (opt) => {
+              const tapped = hasTap(opt.id);
+              const locked = anySGTapped && !tapped;
+              return <NodeBtn key={opt.id} state={tapped?"tapped":locked?"locked":"default"}
+                disabled={locked} onClick={() => { if(tapped||locked)return; tapNode(opt.id,false); }}>
+                <div style={{fontSize:13}}>{opt.label}</div>
+                {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps[opt.id])}</div>}
+                {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr(opt.id)}</div>}
+                {locked&&<div style={{fontSize:10,color:FAINT,marginTop:4}}>locked</div>}
+              </NodeBtn>;
+            };
             return <div key={node.id}>
               {arrow}
-              <div style={{marginBottom:4}}>
-                <div style={{fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:MUTED,marginBottom:6,textAlign:"center"}}>SG — Select Induction Lane</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                  {node.options.map(opt => {
-                    const tapped = hasTap(opt.id);
-                    const locked = isLaneLocked(opt.id);
-                    return <NodeBtn key={opt.id} state={tapped?"tapped":locked?"locked":"default"}
-                      disabled={locked} onClick={() => { if(tapped||locked)return; tapNode(opt.id,false); }}>
-                      <div style={{fontSize:13}}>{opt.label}</div>
-                      {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps[opt.id])}</div>}
-                      {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr(opt.id)}</div>}
-                      {locked&&<div style={{fontSize:10,color:FAINT,marginTop:4}}>locked</div>}
-                    </NodeBtn>;
-                  })}
-                </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                <div>{laneAOpts.map(renderSGBtn)}</div>
+                <div>{laneBOpts.map(renderSGBtn)}</div>
               </div>
             </div>;
           }
@@ -1331,7 +1334,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
       const palletDetails=(s.pallets||[]).map((p,i)=>{
         const segTimes=segs.map(seg=>{const t=getSegmentTime(p.taps||{},seg.from,seg.to);return seg.label+": "+fmtSeg(t);}).join(", ");
-        return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")":"")+(p.cleanRun?" | CLEAN RUN":"")+(p.pairedTravel?" | "+p.pairedTravel.toUpperCase():"");
+        return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")")+(p.cleanRun?" | CLEAN RUN":"")+(p.pairedTravel?" | "+p.pairedTravel.toUpperCase():"");
       });
       const offline=Object.entries(s.offline||{}).filter(e=>e[1]).map(e=>e[0]).join(", ")||"none";
       return "SESSION ANALYSIS\n\nSystem: "+side+" ("+( side==="DD"?"Dairy/Deli":"Freezer")+", independent system)\nSession: "+s.id+" | Condition: "+s.condition+" | Date: "+new Date(s.startTime).toLocaleDateString()+"\nEquipment offline: "+offline+"\nNotes: "+(s.notes||"none")+"\n\n"+palletDetails.join("\n")+"\n\nAnalyze this session. Clean runs establish baseline speed. Singles at SC waited for a pair — normal behavior. What patterns stand out? Which segments are slow beyond what pairing explains?";
