@@ -1334,7 +1334,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
       const palletDetails=(s.pallets||[]).map((p,i)=>{
         const segTimes=segs.map(seg=>{const t=getSegmentTime(p.taps||{},seg.from,seg.to);return seg.label+": "+fmtSeg(t);}).join(", ");
-        return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")")+(p.cleanRun?" | CLEAN RUN":"")+(p.pairedTravel?" | "+p.pairedTravel.toUpperCase():"");
+        return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")":"")+(p.cleanRun?" | CLEAN RUN":"")+(p.pairedTravel?" | "+p.pairedTravel.toUpperCase():"");
       });
       const offline=Object.entries(s.offline||{}).filter(e=>e[1]).map(e=>e[0]).join(", ")||"none";
       return "SESSION ANALYSIS\n\nSystem: "+side+" ("+( side==="DD"?"Dairy/Deli":"Freezer")+", independent system)\nSession: "+s.id+" | Condition: "+s.condition+" | Date: "+new Date(s.startTime).toLocaleDateString()+"\nEquipment offline: "+offline+"\nNotes: "+(s.notes||"none")+"\n\n"+palletDetails.join("\n")+"\n\nAnalyze this session. Clean runs establish baseline speed. Singles at SC waited for a pair — normal behavior. What patterns stand out? Which segments are slow beyond what pairing explains?";
