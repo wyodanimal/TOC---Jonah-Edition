@@ -3,12 +3,16 @@ import { useState, useEffect, useCallback } from "react";
 // ── Lane definitions with lock logic ─────────────────────
 // Lane A = left lane (4300/1300), Lane B = right lane (4100/1100)
 const DD_LANE_MAP = {
+  sg4301: "A", sg4311: "A", sg4101: "B", sg4111: "B",
+  // legacy keys for existing data migration
   sg4300: "A", sg4100: "B",
   amtu4300: "A", amtu4100: "B",
   vl4800: "A", vl4700: "B",
   sc5800: "A", sc5700: "B",
 };
 const FZ_LANE_MAP = {
+  sg1301: "A", sg1311: "A", sg1101: "B", sg1111: "B",
+  // legacy keys for existing data migration
   sg1300: "A", sg1100: "B",
   amtu1300: "A", amtu1100: "B",
   vl1800: "A", vl1700: "B",
@@ -17,56 +21,69 @@ const FZ_LANE_MAP = {
 
 // Default SRM assignments per shuttle — configurable in settings
 const DEFAULT_SRM_ASSIGNMENTS = {
-  sc5800: [15, 16, 17, 14],   // DD left shuttle + shared 14
-  sc5700: [11, 12, 13, 14],   // DD right shuttle + shared 14
-  sc2800: [6, 7, 8, 9, 10, 5], // FZ left shuttle + shared 5
-  sc2700: [1, 2, 3, 4, 5],    // FZ right shuttle + shared 5
+  sc5800: [15, 16, 17, 14],
+  sc5700: [11, 12, 13, 14],
+  sc2800: [6, 7, 8, 9, 10, 5],
+  sc2700: [1, 2, 3, 4, 5],
 };
 
 const DD_NODES = [
   { id: "floor",         label: "Floor / Receiving" },
-  { id: "sg_lane",       label: "SG",   isLaneSplit: true, options: [{ id: "sg4300", label: "SG 4300", lane: "A" }, { id: "sg4100", label: "SG 4100", lane: "B" }] },
+  { id: "sg_lane",       label: "SG",   isLaneSplit: true, options: [
+    { id: "sg4301", label: "SG 4301", lane: "A" },
+    { id: "sg4311", label: "SG 4311", lane: "A" },
+    { id: "sg4101", label: "SG 4101", lane: "B" },
+    { id: "sg4111", label: "SG 4111", lane: "B" },
+  ]},
   { id: "amtu_lane",     label: "AMTU", isLaneSplit: true, options: [{ id: "amtu4300", label: "AMTU 4300", lane: "A" }, { id: "amtu4100", label: "AMTU 4100", lane: "B" }] },
   { id: "dd_conformity", label: "DD Conformity", hasReject: true },
   { id: "vl_lane",       label: "VL",   isLaneSplit: true, options: [{ id: "vl4800", label: "VL 4800", lane: "A" }, { id: "vl4700", label: "VL 4700", lane: "B" }] },
-  { id: "sc_lane",       label: "SC",   isLaneSplit: true, options: [{ id: "sc5800", label: "SC 5800", lane: "A" }, { id: "sc5700", label: "SC 5700", lane: "B" }] },
+  { id: "sc_lane",       label: "SC",   isLaneSplit: true, isSC: true, options: [{ id: "sc5800", label: "SC 5800", lane: "A" }, { id: "sc5700", label: "SC 5700", lane: "B" }] },
   { id: "srm",           label: "SRM",  isSRM: true },
 ];
 
 const FZ_NODES = [
   { id: "floor",         label: "Floor / Receiving" },
-  { id: "sg_lane",       label: "SG",   isLaneSplit: true, options: [{ id: "sg1300", label: "SG 1300", lane: "A" }, { id: "sg1100", label: "SG 1100", lane: "B" }] },
+  { id: "sg_lane",       label: "SG",   isLaneSplit: true, options: [
+    { id: "sg1301", label: "SG 1301", lane: "A" },
+    { id: "sg1311", label: "SG 1311", lane: "A" },
+    { id: "sg1101", label: "SG 1101", lane: "B" },
+    { id: "sg1111", label: "SG 1111", lane: "B" },
+  ]},
   { id: "amtu_lane",     label: "AMTU", isLaneSplit: true, options: [{ id: "amtu1300", label: "AMTU 1300", lane: "A" }, { id: "amtu1100", label: "AMTU 1100", lane: "B" }] },
   { id: "fz_conformity", label: "FZ Conformity", hasReject: true },
   { id: "vl_lane",       label: "VL",   isColdChainCheck: true, isLaneSplit: true, options: [{ id: "vl1800", label: "VL 1800", lane: "A" }, { id: "vl1700", label: "VL 1700", lane: "B" }] },
-  { id: "sc_lane",       label: "SC",   isLaneSplit: true, options: [{ id: "sc2800", label: "SC 2800", lane: "A" }, { id: "sc2700", label: "SC 2700", lane: "B" }] },
+  { id: "sc_lane",       label: "SC",   isLaneSplit: true, isSC: true, options: [{ id: "sc2800", label: "SC 2800", lane: "A" }, { id: "sc2700", label: "SC 2700", lane: "B" }] },
   { id: "srm",           label: "SRM",  isSRM: true },
 ];
 
-const DD_EQUIPMENT = ["SG 4300","SG 4100","AMTU 4300","AMTU 4100","DD Conformity","VL 4800","VL 4700","SC 5800","SC 5700","SRM 11","SRM 12","SRM 13","SRM 14","SRM 15","SRM 16","SRM 17"];
-const FZ_EQUIPMENT = ["SG 1300","SG 1100","AMTU 1300","AMTU 1100","FZ Conformity","VL 1800","VL 1700","SC 2800","SC 2700","SRM 1","SRM 2","SRM 3","SRM 4","SRM 5","SRM 6","SRM 7","SRM 8","SRM 9","SRM 10"];
+const DD_EQUIPMENT = ["SG 4301","SG 4311","SG 4101","SG 4111","AMTU 4300","AMTU 4100","DD Conformity","VL 4800","VL 4700","SC 5800","SC 5700","SRM 11","SRM 12","SRM 13","SRM 14","SRM 15","SRM 16","SRM 17"];
+const FZ_EQUIPMENT = ["SG 1301","SG 1311","SG 1101","SG 1111","AMTU 1300","AMTU 1100","FZ Conformity","VL 1800","VL 1700","SC 2800","SC 2700","SRM 1","SRM 2","SRM 3","SRM 4","SRM 5","SRM 6","SRM 7","SRM 8","SRM 9","SRM 10"];
 const CONDITIONS   = ["Mostly Receiving","Mostly Shipping","Split"];
 const FLAG_REASONS = ["Mechanical breakdown","Partial shutdown","Maintenance / PM","Understaffed","Unknown","Other"];
 
 const DD_SEGMENTS = [
-  { key: "floor->sg",        label: "Floor → SG",        from: ["floor"],                    to: ["sg4300","sg4100"] },
-  { key: "sg->amtu",         label: "SG → AMTU",          from: ["sg4300","sg4100"],          to: ["amtu4300","amtu4100"] },
-  { key: "amtu->conformity", label: "AMTU → Conformity",  from: ["amtu4300","amtu4100"],      to: ["dd_conformity"] },
-  { key: "conformity->vl",   label: "Conformity → VL",    from: ["dd_conformity"],            to: ["vl4800","vl4700"] },
-  { key: "vl->sc",           label: "VL → SC",            from: ["vl4800","vl4700"],          to: ["sc5800","sc5700"] },
-  { key: "sc->srm",          label: "SC → SRM",           from: ["sc5800","sc5700"],          to: ["srm"] },
+  { key: "floor->sg",        label: "Floor → SG",        from: ["floor"],                                    to: ["sg4301","sg4311","sg4101","sg4111","sg4300","sg4100"] },
+  { key: "sg->amtu",         label: "SG → AMTU",          from: ["sg4301","sg4311","sg4101","sg4111","sg4300","sg4100"], to: ["amtu4300","amtu4100"] },
+  { key: "amtu->conformity", label: "AMTU → Conformity",  from: ["amtu4300","amtu4100"],                     to: ["dd_conformity"] },
+  { key: "conformity->vl",   label: "Conformity → VL",    from: ["dd_conformity"],                           to: ["vl4800","vl4700"] },
+  { key: "vl->sc",           label: "VL → SC",            from: ["vl4800","vl4700"],                         to: ["sc5800","sc5700"] },
+  { key: "sc->srm",          label: "SC → SRM",           from: ["sc5800","sc5700"],                         to: ["srm"] },
 ];
 const FZ_SEGMENTS = [
-  { key: "floor->sg",        label: "Floor → SG",        from: ["floor"],                    to: ["sg1300","sg1100"] },
-  { key: "sg->amtu",         label: "SG → AMTU",          from: ["sg1300","sg1100"],          to: ["amtu1300","amtu1100"] },
-  { key: "amtu->conformity", label: "AMTU → Conformity",  from: ["amtu1300","amtu1100"],      to: ["fz_conformity"] },
-  { key: "conformity->vl",   label: "Conformity → VL",    from: ["fz_conformity"],            to: ["vl1800","vl1700"] },
-  { key: "vl->sc",           label: "VL → SC",            from: ["vl1800","vl1700"],          to: ["sc2800","sc2700"] },
-  { key: "sc->srm",          label: "SC → SRM",           from: ["sc2800","sc2700"],          to: ["srm"] },
+  { key: "floor->sg",        label: "Floor → SG",        from: ["floor"],                                    to: ["sg1301","sg1311","sg1101","sg1111","sg1300","sg1100"] },
+  { key: "sg->amtu",         label: "SG → AMTU",          from: ["sg1301","sg1311","sg1101","sg1111","sg1300","sg1100"], to: ["amtu1300","amtu1100"] },
+  { key: "amtu->conformity", label: "AMTU → Conformity",  from: ["amtu1300","amtu1100"],                     to: ["fz_conformity"] },
+  { key: "conformity->vl",   label: "Conformity → VL",    from: ["fz_conformity"],                           to: ["vl1800","vl1700"] },
+  { key: "vl->sc",           label: "VL → SC",            from: ["vl1800","vl1700"],                         to: ["sc2800","sc2700"] },
+  { key: "sc->srm",          label: "SC → SRM",           from: ["sc2800","sc2700"],                         to: ["srm"] },
 ];
 
 const NODE_SHORT = {
-  floor:"FL", sg4300:"SG43", sg4100:"SG41", sg1300:"SG13", sg1100:"SG11",
+  floor:"FL",
+  sg4301:"SG4301", sg4311:"SG4311", sg4101:"SG4101", sg4111:"SG4111",
+  sg4300:"SG43", sg4100:"SG41", sg1300:"SG13", sg1100:"SG11",
+  sg1301:"SG1301", sg1311:"SG1311", sg1101:"SG1101", sg1111:"SG1111",
   amtu4300:"AM43", amtu4100:"AM41", amtu1300:"AM13", amtu1100:"AM11",
   dd_conformity:"CF", fz_conformity:"CF",
   vl4800:"VL48", vl4700:"VL47", vl1800:"VL18", vl1700:"VL17",
@@ -75,6 +92,9 @@ const NODE_SHORT = {
 };
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyL1gPRqiWdDpLyRY7eUXjHADAXyG7pOf3kFmnHZDyJDrnFZKPa6Pu7VTsMlrv25G7T/exec";
+
+// Session auto-resume threshold: 2 hours in ms
+const SESSION_RESUME_THRESHOLD = 2 * 60 * 60 * 1000;
 
 // ── Colors ────────────────────────────────────────────────
 const BG      = "#1a1f2e";
@@ -119,7 +139,7 @@ function buildPalletId(side, taps, srmNumber, seq) {
   const sideChar = side === "FZ" ? "F" : "D";
   const inductKey = Object.keys(taps).find(k => k.startsWith("sg"));
   let inductShort = "";
-  if (inductKey) inductShort = inductKey.replace("sg","").slice(0,2);
+  if (inductKey) inductShort = (NODE_SHORT[inductKey] || inductKey).replace("SG","").slice(0,4);
   const sorted = Object.entries(taps).sort((a,b) => a[1]-b[1]);
   const firstKey = sorted[0]?.[0] || "";
   const lastKey  = sorted[sorted.length-1]?.[0] || "";
@@ -165,8 +185,12 @@ async function syncToSheets(ddSessions, fzSessions, dockSessions) {
     const offlineList = Object.entries(p.offlineEquip||{}).filter(e=>e[1]).map(e=>e[0]).join("; ");
     return [p.id||"",p.side||"",p.condition||"",p.sessionId||"",p.srmNumber||"",
       p.coldChainFlag?"YES":"NO", p.coldChainFlag?(p.coldChainFlag.reason||""):"", p.rejected?"YES":"NO",
+      p.cleanRun?"YES":"NO", p.pairedTravel||"",
       totalMs?(totalMs/60000).toFixed(3):"",
-      fmtTs("floor"),fmtTs("sg4300"),fmtTs("sg4100"),fmtTs("sg1300"),fmtTs("sg1100"),
+      fmtTs("floor"),
+      fmtTs("sg4301"),fmtTs("sg4311"),fmtTs("sg4101"),fmtTs("sg4111"),
+      fmtTs("sg4300"),fmtTs("sg4100"),fmtTs("sg1300"),fmtTs("sg1100"),
+      fmtTs("sg1301"),fmtTs("sg1311"),fmtTs("sg1101"),fmtTs("sg1111"),
       fmtTs("amtu4300"),fmtTs("amtu4100"),fmtTs("amtu1300"),fmtTs("amtu1100"),
       fmtTs("dd_conformity")||fmtTs("fz_conformity"),
       fmtTs("vl4800"),fmtTs("vl4700"),fmtTs("vl1800"),fmtTs("vl1700"),
@@ -267,6 +291,19 @@ function Confirm({ title, body, onYes, onNo, yesLabel="Confirm", noLabel="Cancel
   </ModalWrap>;
 }
 
+// ── Pairing Modal — shown after SC tap ───────────────────
+function PairingModal({ scLabel, onSelect }) {
+  return <ModalWrap>
+    <div style={{background:SURFACE,border:"1px solid "+ORANGE,borderRadius:14,padding:24,width:"100%",maxWidth:360}}>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:ORANGE,marginBottom:6}}>Shuttle Car — {scLabel}</div>
+      <div style={{fontSize:17,fontWeight:700,color:TEXT,marginBottom:6}}>Did it travel as a pair?</div>
+      <div style={{fontSize:13,color:MUTED,marginBottom:20,lineHeight:1.5}}>A single pallet may have waited for a partner before moving.</div>
+      <Btn variant="success" onClick={() => onSelect("Paired")}>✓ Paired</Btn>
+      <Btn variant="outline" onClick={() => onSelect("Single")}>Single — No Pair</Btn>
+    </div>
+  </ModalWrap>;
+}
+
 function SRMPicker({ srms, onSelect, onCancel }) {
   return <ModalWrap>
     <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:14,padding:24,width:"100%",maxWidth:360}}>
@@ -339,17 +376,34 @@ function SessionSetup({ side, onStart }) {
 // ── Observer Tab ──────────────────────────────────────────
 function ObserverTab({ side, nodes, settings }) {
   const [sessions, setSessions] = useStorage("sessions_"+side, []);
-  const [activeSession, setActiveSession] = useState(null);
+
+  // ── Session auto-resume ──────────────────────────────────
+  const [activeSession, setActiveSession] = useState(() => {
+    try {
+      const raw = localStorage.getItem("sessions_"+side);
+      if (!raw) return null;
+      const saved = JSON.parse(raw);
+      if (!saved || !saved.length) return null;
+      const last = saved[saved.length - 1];
+      // Resume if session has no endTime and was started within 2 hours
+      if (!last.endTime && last.startTime && (Date.now() - last.startTime) < SESSION_RESUME_THRESHOLD) {
+        return last;
+      }
+      return null;
+    } catch { return null; }
+  });
+
   const [pallet, setPallet] = useState(null);
-  const [lockedLane, setLockedLane] = useState(null); // "A" or "B"
-  const [lockedSC, setLockedSC] = useState(null);     // "sc5800" etc
+  const [lockedLane, setLockedLane] = useState(null);
+  const [lockedSC, setLockedSC] = useState(null);
   const [srmNumber, setSrmNumber] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [coldFlag, setColdFlag] = useState(null);
   const [slowFlag, setSlowFlag] = useState(null);
   const [srmPicker, setSrmPicker] = useState(false);
-  const [view, setView] = useState("setup");
-  const [errors, setErrors] = useState([]);          // [{start, end, note}]
+  const [pairingModal, setPairingModal] = useState(null); // { scKey, scLabel }
+  const [view, setView] = useState(activeSession ? "observer" : "setup");
+  const [errors, setErrors] = useState([]);
   const [errorActive, setErrorActive] = useState(false);
   const [errorStart, setErrorStart] = useState(null);
   const [errorNote, setErrorNote] = useState("");
@@ -362,10 +416,8 @@ function ObserverTab({ side, nodes, settings }) {
 
   const laneMap = side === "DD" ? DD_LANE_MAP : FZ_LANE_MAP;
 
-  // Get SRMs for the currently locked shuttle car
   const getSRMsForCurrentLane = () => {
     if (!lockedSC) return side === "DD" ? [11,12,13,14,15,16,17] : [1,2,3,4,5,6,7,8,9,10];
-    // Try settings first, then defaults
     const settingsKey = "srm_" + lockedSC;
     if (settings[settingsKey]) {
       return settings[settingsKey].split(",").map(n => parseInt(n.trim())).filter(n => !isNaN(n));
@@ -373,22 +425,13 @@ function ObserverTab({ side, nodes, settings }) {
     return DEFAULT_SRM_ASSIGNMENTS[lockedSC] || [];
   };
 
-  const startError = () => {
-    setErrorActive(true);
-    setErrorStart(Date.now());
-    setErrorNote("");
-  };
+  const startError = () => { setErrorActive(true); setErrorStart(Date.now()); setErrorNote(""); };
   const stopError = () => {
     if (!errorStart) return;
     const err = { start: errorStart, end: Date.now(), duration: Date.now() - errorStart, note: errorNote };
     setErrors(prev => [...prev, err]);
-    // Attach errors to pallet
-    if (pallet) {
-      setPallet(p => ({ ...p, errors: [...(p.errors||[]), err] }));
-    }
-    setErrorActive(false);
-    setErrorStart(null);
-    setErrorNote("");
+    if (pallet) setPallet(p => ({ ...p, errors: [...(p.errors||[]), err] }));
+    setErrorActive(false); setErrorStart(null); setErrorNote("");
   };
 
   const firstTs = useCallback(() => {
@@ -411,13 +454,11 @@ function ObserverTab({ side, nodes, settings }) {
     return pallet.taps[side==="DD"?"dd_conformity":"fz_conformity"]!==undefined;
   };
 
-  // Determine if a lane option is locked out
   const isLaneLocked = (optId) => {
     if (!lockedLane) return false;
-    // VL options are never locked out — lane resets at conformity and re-locks when VL is tapped
     if (optId.startsWith("vl")) {
       const anyVLTapped = pallet && Object.keys(pallet.taps).some(k => k.startsWith("vl"));
-      if (!anyVLTapped) return false; // no VL tapped yet — both VLs available
+      if (!anyVLTapped) return false;
     }
     const optLane = laneMap[optId];
     return optLane && optLane !== lockedLane;
@@ -428,22 +469,29 @@ function ObserverTab({ side, nodes, settings }) {
     const ts = Date.now();
     const prevEntries = Object.entries(p.taps).sort((a,b)=>a[1]-b[1]);
     const updated = {...p,taps:{...p.taps,[key]:ts}};
-    // Lane lock logic:
-    // - Tapping SG or AMTU locks the lane
-    // - Tapping Conformity RESETS the lane lock (both VLs become available)
-    // - Tapping a VL re-locks the lane for SC and SRM
     const nodeLane = laneMap[key];
     const conformityK = side === "DD" ? "dd_conformity" : "fz_conformity";
     if (key === conformityK) {
-      setLockedLane(null); // free the lane at conformity
+      setLockedLane(null);
     } else if (nodeLane && key.startsWith("vl")) {
-      setLockedLane(nodeLane); // re-lock once VL is chosen
+      setLockedLane(nodeLane);
     } else if (nodeLane && !lockedLane) {
-      setLockedLane(nodeLane); // initial lock on SG/AMTU
+      setLockedLane(nodeLane);
     }
-    // Lock SC if this is a shuttle car tap
-    if (key.startsWith("sc")) setLockedSC(key);
-
+    if (key.startsWith("sc")) {
+      setLockedSC(key);
+      // Record tap first, then ask pairing question
+      if (prevEntries.length>0) {
+        const seg = ts-prevEntries[prevEntries.length-1][1];
+        if (seg>20*60*1000) { setSlowFlag({key,seg,updated,isSC:true}); return; }
+      }
+      setPallet(updated);
+      // Find the label for the SC button
+      const scNode = nodes.find(n => n.isSC && n.options?.some(o => o.id === key));
+      const scLabel = scNode?.options?.find(o => o.id === key)?.label || key;
+      setPairingModal({ scKey: key, scLabel });
+      return;
+    }
     if (prevEntries.length>0) {
       const seg = ts-prevEntries[prevEntries.length-1][1];
       if (seg>20*60*1000) { setSlowFlag({key,seg,updated}); return; }
@@ -474,14 +522,15 @@ function ObserverTab({ side, nodes, settings }) {
     setPallet(updated);
   };
 
+  const handlePairingSelect = (pairedTravel) => {
+    setPairingModal(null);
+    setPallet(p => p ? {...p, pairedTravel} : p);
+  };
+
   const startPallet = (thenKey) => {
-    const p = {id:"PENDING",taps:{},rejected:false,coldChainFlag:null,complete:false,errors:[]};
-    setLockedLane(null);
-    setLockedSC(null);
-    setSrmNumber(null);
-    setErrors([]);
-    setErrorActive(false);
-    setErrorStart(null);
+    const p = {id:"PENDING",taps:{},rejected:false,coldChainFlag:null,complete:false,errors:[],pairedTravel:null,cleanRun:false};
+    setLockedLane(null); setLockedSC(null); setSrmNumber(null);
+    setErrors([]); setErrorActive(false); setErrorStart(null);
     if (thenKey) {
       const nodeLane = laneMap[thenKey];
       if (nodeLane) setLockedLane(nodeLane);
@@ -491,26 +540,40 @@ function ObserverTab({ side, nodes, settings }) {
     }
   };
 
+  const saveSessionState = (session) => {
+    setSessions(prev => {
+      const idx = prev.findIndex(x => x.id === session.id);
+      if (idx >= 0) { const n=[...prev]; n[idx]=session; return n; }
+      return [...prev, session];
+    });
+  };
+
   const savePallet = (p, srm) => {
     const seq = incrementDailyCount(side);
     const finalId = buildPalletId(side,p.taps,srm,seq);
     const final = {...p,id:finalId,srmNumber:srm};
     const s = {...activeSession,pallets:[...(activeSession.pallets||[]),final]};
     setActiveSession(s);
-    setSessions(prev => { const idx=prev.findIndex(x=>x.id===s.id); if(idx>=0){const n=[...prev];n[idx]=s;return n;} return [...prev,s]; });
+    saveSessionState(s);
     setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null);
   };
 
-  const completePallet = () => savePallet({...pallet,complete:true,endTime:Date.now()},srmNumber);
+  const completePallet = (cleanRun=false) => savePallet({...pallet,complete:true,cleanRun,endTime:Date.now()},srmNumber);
   const rejectPallet   = () => savePallet({...pallet,rejected:true,complete:true,endTime:Date.now()},srmNumber);
+
   const endSession = () => {
     const s = {...activeSession,endTime:Date.now()};
-    setSessions(prev => { const idx=prev.findIndex(x=>x.id===s.id); if(idx>=0){const n=[...prev];n[idx]=s;return n;} return [...prev,s]; });
+    saveSessionState(s);
     setActiveSession(null); setPallet(null); setLockedLane(null); setLockedSC(null); setView("setup");
   };
 
   if (view==="setup") return <div>
-    <SessionSetup side={side} onStart={(cfg) => { setActiveSession({id:"S"+Date.now().toString(36).toUpperCase().slice(-5),side,...cfg,pallets:[]}); setView("observer"); }}/>
+    <SessionSetup side={side} onStart={(cfg) => {
+      const newSession = {id:"S"+Date.now().toString(36).toUpperCase().slice(-5),side,...cfg,pallets:[]};
+      setActiveSession(newSession);
+      saveSessionState(newSession);
+      setView("observer");
+    }}/>
     {sessions.length>0&&<><Hr/><SLabel>Recent Sessions</SLabel>
       {sessions.slice(-3).reverse().map(s => <Card key={s.id}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
@@ -529,8 +592,18 @@ function ObserverTab({ side, nodes, settings }) {
       onYes={() => { completePallet(); startPallet(); setConfirm(null); }} onNo={() => setConfirm(null)}/>}
     {coldFlag&&<ColdFlagModal elapsed={coldFlag.elapsed} onSave={(data) => { setPallet(p=>({...p,coldChainFlag:data})); setColdFlag(null); }}/>}
     {slowFlag&&<Confirm title="Unusual Segment Time" body={"That segment was "+fmt(slowFlag.seg)+". Keep or discard?"} yesLabel="Keep It" noLabel="Delete It" dangerNo
-      onYes={() => { setPallet(slowFlag.updated); setSlowFlag(null); }} onNo={() => setSlowFlag(null)}/>}
+      onYes={() => {
+        setPallet(slowFlag.updated);
+        if (slowFlag.isSC) {
+          const scNode = nodes.find(n => n.isSC && n.options?.some(o => o.id === slowFlag.key));
+          const scLabel = scNode?.options?.find(o => o.id === slowFlag.key)?.label || slowFlag.key;
+          setPairingModal({ scKey: slowFlag.key, scLabel });
+        }
+        setSlowFlag(null);
+      }}
+      onNo={() => setSlowFlag(null)}/>}
     {srmPicker&&<SRMPicker srms={getSRMsForCurrentLane()} onSelect={handleSRMSelect} onCancel={() => setSrmPicker(false)}/>}
+    {pairingModal&&<PairingModal scLabel={pairingModal.scLabel} onSelect={handlePairingSelect}/>}
 
     <div style={{background:SURFACE,borderRadius:10,padding:"12px 16px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
       <div>
@@ -553,6 +626,7 @@ function ObserverTab({ side, nodes, settings }) {
           <Chip label={pallet.id==="PENDING"?(side==="FZ"?"F":"D")+" · In Progress":pallet.id} color="orange"/>
           {srmNumber&&<Chip label={"SRM "+srmNumber} color="blue"/>}
           {pallet.coldChainFlag&&<Chip label="Cold Flag" color="red"/>}
+          {pallet.pairedTravel&&<Chip label={pallet.pairedTravel} color={pallet.pairedTravel==="Paired"?"green":"faint"}/>}
           {errors.length>0&&<Chip label={errors.length+" error"+(errors.length>1?"s":"")} color="red"/>}
         </div>
         {conformityTapped()&&<Btn variant="danger" small onClick={rejectPallet} style={{width:"auto",padding:"6px 14px",marginBottom:0}}>Reject</Btn>}
@@ -598,22 +672,48 @@ function ObserverTab({ side, nodes, settings }) {
           </div>;
         }
 
-        if (node.isLaneSplit) return <div key={node.id}>
-          {arrow}
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            {node.options.map(opt => {
-              const tapped = hasTap(opt.id);
-              const locked = isLaneLocked(opt.id);
-              return <NodeBtn key={opt.id} state={tapped?"tapped":locked?"locked":"default"}
-                disabled={locked} onClick={() => { if(tapped||locked)return; tapNode(opt.id,false); }}>
-                <div>{opt.label}</div>
-                {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps[opt.id])}</div>}
-                {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr(opt.id)}</div>}
-                {locked&&<div style={{fontSize:10,color:FAINT,marginTop:4}}>locked</div>}
-              </NodeBtn>;
-            })}
-          </div>
-        </div>;
+        if (node.isLaneSplit) {
+          // SG for DD: 4 buttons in 2x2 grid
+          const isSGDD = side==="DD" && node.options?.some(o=>o.id.startsWith("sg43")||o.id.startsWith("sg41"));
+          const isSGFZ = side==="FZ" && node.options?.some(o=>o.id.startsWith("sg13")||o.id.startsWith("sg11"));
+          if (isSGDD || isSGFZ) {
+            return <div key={node.id}>
+              {arrow}
+              <div style={{marginBottom:4}}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:MUTED,marginBottom:6,textAlign:"center"}}>SG — Select Induction Lane</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  {node.options.map(opt => {
+                    const tapped = hasTap(opt.id);
+                    const locked = isLaneLocked(opt.id);
+                    return <NodeBtn key={opt.id} state={tapped?"tapped":locked?"locked":"default"}
+                      disabled={locked} onClick={() => { if(tapped||locked)return; tapNode(opt.id,false); }}>
+                      <div style={{fontSize:13}}>{opt.label}</div>
+                      {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps[opt.id])}</div>}
+                      {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr(opt.id)}</div>}
+                      {locked&&<div style={{fontSize:10,color:FAINT,marginTop:4}}>locked</div>}
+                    </NodeBtn>;
+                  })}
+                </div>
+              </div>
+            </div>;
+          }
+          return <div key={node.id}>
+            {arrow}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {node.options.map(opt => {
+                const tapped = hasTap(opt.id);
+                const locked = isLaneLocked(opt.id);
+                return <NodeBtn key={opt.id} state={tapped?"tapped":locked?"locked":"default"}
+                  disabled={locked} onClick={() => { if(tapped||locked)return; tapNode(opt.id,false); }}>
+                  <div>{opt.label}</div>
+                  {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps[opt.id])}</div>}
+                  {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr(opt.id)}</div>}
+                  {locked&&<div style={{fontSize:10,color:FAINT,marginTop:4}}>locked</div>}
+                </NodeBtn>;
+              })}
+            </div>
+          </div>;
+        }
 
         const tapped = hasTap(node.id);
         const isNext = !tapped&&(idx===0||(()=>{const prev=nodes[idx-1];if(!prev)return true;if(prev.isLaneSplit)return prev.options.some(o=>hasTap(o.id));return hasTap(prev.id);})());
@@ -628,9 +728,179 @@ function ObserverTab({ side, nodes, settings }) {
       })}
 
       <div style={{marginTop:12}}>
-        <Btn variant="success" onClick={completePallet}>Complete Observation</Btn>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+          <Btn variant="success" onClick={() => completePallet(false)} style={{marginBottom:0}}>Complete</Btn>
+          <Btn variant="success" onClick={() => completePallet(true)} style={{marginBottom:0,background:"transparent",border:"2px solid "+GREEN,color:GREEN}}>✓ Clean Run</Btn>
+        </div>
         <Btn variant="ghost" small onClick={() => { setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); setErrors([]); setErrorActive(false); }}>Cancel / Discard</Btn>
       </div>
+    </>}
+    <div style={{height:24}}/>
+  </div>;
+}
+
+// ── Conformity Throughput Tab ─────────────────────────────
+function ConformityTab() {
+  const [conformitySessions, setConformitySessions] = useStorage("conformity_sessions", []);
+  const [side, setSide] = useState(null);
+  const [mode, setMode] = useState(null); // "uncontested" | "constrained"
+  const [running, setRunning] = useState(false);
+  const [startTs, setStartTs] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const [palletCount, setPalletCount] = useState("");
+  const [showResult, setShowResult] = useState(null);
+
+  useEffect(() => {
+    if (!running) return;
+    const i = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(i);
+  }, [running]);
+
+  const elapsed = running && startTs ? now - startTs : 0;
+
+  const handleStart = () => {
+    setStartTs(Date.now());
+    setRunning(true);
+    setPalletCount("");
+    setShowResult(null);
+  };
+
+  const handleStop = () => {
+    setRunning(false);
+  };
+
+  const handleSave = () => {
+    if (!startTs || !palletCount || isNaN(Number(palletCount))) return;
+    const endTs = Date.now();
+    const durationMs = endTs - startTs;
+    const count = Number(palletCount);
+    const palletsPerHour = count / (durationMs / 3600000);
+    const palletsPerMin = count / (durationMs / 60000);
+    const session = {
+      id: "CF" + Date.now().toString(36).toUpperCase().slice(-5),
+      ts: endTs,
+      side,
+      mode,
+      startTs,
+      endTs,
+      durationMs,
+      palletCount: count,
+      palletsPerHour,
+      palletsPerMin,
+    };
+    setConformitySessions(prev => [...prev, session]);
+    setShowResult(session);
+    setStartTs(null);
+    setPalletCount("");
+  };
+
+  const reset = () => {
+    setRunning(false);
+    setStartTs(null);
+    setPalletCount("");
+    setShowResult(null);
+    setSide(null);
+    setMode(null);
+  };
+
+  const inp = {width:"100%",background:CARD,border:"1px solid "+BORDER,color:TEXT,fontFamily:"inherit",fontSize:20,fontWeight:700,padding:"14px 12px",borderRadius:8,outline:"none",marginBottom:12,boxSizing:"border-box",textAlign:"center"};
+
+  // Group sessions for comparison
+  const ddSessions = conformitySessions.filter(s => s.side === "DD");
+  const fzSessions = conformitySessions.filter(s => s.side === "FZ");
+  const avgRate = (arr, m) => {
+    const filtered = arr.filter(s => s.mode === m);
+    if (!filtered.length) return null;
+    return filtered.reduce((a,s) => a + s.palletsPerHour, 0) / filtered.length;
+  };
+
+  return <div>
+    <SLabel mt={4}>Conformity Throughput Counter</SLabel>
+
+    {showResult && <div style={{background:"rgba(76,175,125,0.08)",border:"2px solid "+GREEN,borderRadius:10,padding:"16px",marginBottom:16}}>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:GREEN,marginBottom:8}}>Result Saved</div>
+      <div style={{fontSize:32,fontWeight:700,color:GREEN,marginBottom:4}}>{showResult.palletsPerHour.toFixed(1)} <span style={{fontSize:16,color:MUTED}}>pallets/hr</span></div>
+      <div style={{fontSize:14,color:ORANGE2,marginBottom:4}}>{showResult.palletsPerMin.toFixed(2)} pallets/min</div>
+      <div style={{fontSize:12,color:MUTED}}>{showResult.side} · {showResult.mode === "uncontested" ? "Uncontested" : "Constrained"} · {showResult.palletCount} pallets · {fmt(showResult.durationMs)}</div>
+      <Btn variant="outline" small onClick={reset} style={{marginTop:12,marginBottom:0}}>New Measurement</Btn>
+    </div>}
+
+    {!showResult && <>
+      {!running && !startTs && <>
+        <SLabel>System</SLabel>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:4}}>
+          {["DD","FZ"].map(s => <Btn key={s} small variant={side===s?"active":"default"} onClick={() => setSide(s)}>{s==="DD"?"Dairy/Deli":"Freezer"}</Btn>)}
+        </div>
+        <SLabel>Mode</SLabel>
+        <Btn variant={mode==="uncontested"?"active":"default"} onClick={() => setMode("uncontested")}>
+          Uncontested — Downstream Clear
+        </Btn>
+        <div style={{fontSize:11,color:MUTED,marginBottom:12,marginTop:-4,paddingLeft:4}}>True machine speed — VLs and SCs are clear</div>
+        <Btn variant={mode==="constrained"?"active":"default"} onClick={() => setMode("constrained")}>
+          Constrained — Downstream Loading
+        </Btn>
+        <div style={{fontSize:11,color:MUTED,marginBottom:16,marginTop:-4,paddingLeft:4}}>Running with freight downstream, conformity throttled by VL/SC</div>
+        <Btn variant="primary" disabled={!side||!mode} onClick={handleStart}>Start Timer</Btn>
+      </>}
+
+      {(running || (startTs && !running)) && <>
+        <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:10,padding:"16px",marginBottom:16,textAlign:"center"}}>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:side==="DD"?ORANGE:BLUE,marginBottom:6}}>{side} · {mode==="uncontested"?"Uncontested":"Constrained"}</div>
+          <div style={{fontSize:48,fontWeight:700,color:running?ORANGE2:MUTED,fontFamily:"monospace",letterSpacing:-1}}>{fmt(running ? elapsed : (startTs ? Date.now()-startTs : 0))}</div>
+          {running
+            ? <button onClick={handleStop} style={{marginTop:16,background:RED,color:"#fff",border:"none",borderRadius:10,padding:"16px 32px",fontSize:16,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>Stop Timer</button>
+            : <div style={{fontSize:13,color:GREEN,marginTop:8,fontWeight:700}}>Timer stopped — enter pallet count below</div>
+          }
+        </div>
+
+        {!running && startTs && <>
+          <SLabel mt={0}>How many pallets went through?</SLabel>
+          <input
+            type="number"
+            inputMode="numeric"
+            placeholder="0"
+            value={palletCount}
+            onChange={e => setPalletCount(e.target.value)}
+            style={inp}
+          />
+          {palletCount && !isNaN(Number(palletCount)) && Number(palletCount) > 0 && <>
+            <div style={{background:"rgba(232,118,10,0.08)",border:"1px solid "+ORANGE,borderRadius:8,padding:"12px 16px",marginBottom:12,textAlign:"center"}}>
+              <div style={{fontSize:28,fontWeight:700,color:ORANGE2}}>{(Number(palletCount)/((Date.now()-startTs)/3600000)).toFixed(1)} <span style={{fontSize:14,color:MUTED}}>pallets/hr</span></div>
+              <div style={{fontSize:13,color:MUTED,marginTop:2}}>{(Number(palletCount)/((Date.now()-startTs)/60000)).toFixed(2)} pallets/min</div>
+            </div>
+          </>}
+          <Btn variant="success" disabled={!palletCount||isNaN(Number(palletCount))||Number(palletCount)<=0} onClick={handleSave}>Save Result</Btn>
+          <Btn variant="ghost" small onClick={reset}>Cancel</Btn>
+        </>}
+      </>}
+    </>}
+
+    {conformitySessions.length > 0 && <>
+      <Hr/>
+      <SLabel>Rate Comparison</SLabel>
+      {["DD","FZ"].map(s => {
+        const uc = avgRate(s==="DD"?ddSessions:fzSessions, "uncontested");
+        const co = avgRate(s==="DD"?ddSessions:fzSessions, "constrained");
+        if (!uc && !co) return null;
+        return <Card key={s}>
+          <div style={{fontSize:12,fontWeight:700,color:s==="DD"?ORANGE2:BLUE,marginBottom:10}}>{s==="DD"?"Dairy/Deli":"Freezer"} Conformity</div>
+          <StatPair
+            left={uc?{label:"Uncontested Avg",value:uc.toFixed(1),color:GREEN,sub:"pallets/hr"}:{label:"Uncontested",value:"--",color:MUTED}}
+            right={co?{label:"Constrained Avg",value:co.toFixed(1),color:ORANGE2,sub:"pallets/hr"}:{label:"Constrained",value:"--",color:MUTED}}
+          />
+          {uc&&co&&<div style={{fontSize:12,color:MUTED}}>Downstream tax: <span style={{color:RED,fontWeight:700}}>{(uc-co).toFixed(1)} pallets/hr ({(((uc-co)/uc)*100).toFixed(0)}% loss)</span></div>}
+        </Card>;
+      })}
+      <SLabel>Recent Sessions</SLabel>
+      {conformitySessions.slice().reverse().slice(0,8).map(s => <Card key={s.id} style={{marginBottom:6}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:TEXT}}>{s.side} · <span style={{color:s.mode==="uncontested"?GREEN:ORANGE2}}>{s.mode==="uncontested"?"Uncontested":"Constrained"}</span></div>
+            <div style={{fontSize:11,color:MUTED,marginTop:2}}>{s.palletCount} pallets · {fmt(s.durationMs)} · {new Date(s.ts).toLocaleDateString()}</div>
+          </div>
+          <div style={{fontSize:18,fontWeight:700,color:ORANGE2}}>{s.palletsPerHour.toFixed(1)}<span style={{fontSize:10,color:MUTED}}>/hr</span></div>
+        </div>
+      </Card>)}
     </>}
     <div style={{height:24}}/>
   </div>;
@@ -656,7 +926,7 @@ function ManHourCard({ people, elapsedMs, palletCount, label }) {
 function UnloadingTab({ settings }) {
   const [sessions,setSessions] = useStorage("dock_sessions",[]);
   const [mode,setMode] = useState(null);
-  const [meta,setMeta] = useState({side:"FZ",door:"",people:"2",induct:"SG 1300",desc:""});
+  const [meta,setMeta] = useState({side:"FZ",door:"",people:"2",induct:"SG 1301",desc:""});
   const [batch,setBatch] = useState(Array(5).fill(null).map((_,i)=>({id:i+1,floorTs:null,inductTs:null})));
   const [single,setSingle] = useState({floor:null,induct:null});
   const [batchStart,setBatchStart] = useState(null);
@@ -674,7 +944,7 @@ function UnloadingTab({ settings }) {
   };
   const totalGapTime = crewGaps.reduce((a,g)=>a+g.duration,0);
 
-  const INDUCT = {FZ:["SG 1300","SG 1100"],DD:["SG 4300","SG 4100"]};
+  const INDUCT = {FZ:["SG 1301","SG 1311","SG 1101","SG 1111"],DD:["SG 4301","SG 4311","SG 4101","SG 4111"]};
   const completedBatch = batch.filter(p=>p.floorTs&&p.inductTs);
   const batchElapsed = batchStart?now-batchStart:0;
   const ta  = {width:"100%",background:CARD,border:"1px solid "+BORDER,color:TEXT,fontFamily:"inherit",fontSize:13,padding:"10px 12px",borderRadius:6,outline:"none",resize:"none",boxSizing:"border-box",marginBottom:12};
@@ -691,7 +961,7 @@ function UnloadingTab({ settings }) {
       crewGaps,totalGapTime:crewGaps.reduce((a,g)=>a+g.duration,0)}]);
     setMode(null); setSingle({floor:null,induct:null});
     setBatch(Array(5).fill(null).map((_,i)=>({id:i+1,floorTs:null,inductTs:null})));
-    setBatchStart(null); setMeta({side:"FZ",door:"",people:"2",induct:"SG 1300",desc:""});
+    setBatchStart(null); setMeta({side:"FZ",door:"",people:"2",induct:"SG 1301",desc:""});
     setCrewGaps([]); setGapActive(false); setGapStart(null);
   };
 
@@ -892,7 +1162,13 @@ function HistoryTab() {
               padding:"8px 10px",background:SURFACE,borderRadius:6,marginBottom:4}}>
               <div>
                 <div style={{fontSize:11,fontWeight:700,color:TEXT}}>{p.id}</div>
-                <div style={{fontSize:10,color:MUTED}}>{Object.keys(p.taps||{}).length} nodes · {fmt(totalTime(p))}{p.rejected?" · REJECTED":""}{p.coldChainFlag?" · COLD FLAG":""}</div>
+                <div style={{fontSize:10,color:MUTED}}>
+                  {Object.keys(p.taps||{}).length} nodes · {fmt(totalTime(p))}
+                  {p.rejected?" · REJECTED":""}
+                  {p.coldChainFlag?" · COLD FLAG":""}
+                  {p.cleanRun?" · CLEAN RUN":""}
+                  {p.pairedTravel?" · "+p.pairedTravel.toUpperCase():""}
+                </div>
               </div>
               <button onClick={()=>setConfirmDelete({type:"pallet",session:s,palletId:p.id})}
                 style={{background:"transparent",border:"1px solid "+BORDER,color:MUTED,fontSize:10,fontWeight:700,padding:"4px 8px",borderRadius:4,cursor:"pointer",fontFamily:"inherit"}}>
@@ -998,6 +1274,8 @@ function SummaryTab() {
 
   const coldFlags = allPallets.filter(p=>p.coldChainFlag).length;
   const rejected  = allPallets.filter(p=>p.rejected).length;
+  const cleanRuns = allPallets.filter(p=>p.cleanRun).length;
+  const singles   = allPallets.filter(p=>p.pairedTravel==="Single").length;
   const totalManHrs = dockSessions.reduce((a,s)=>a+(s.manHrsTotal||0),0);
   const mhpp = dockSessions.filter(s=>s.manHrsPerPallet).map(s=>s.manHrsPerPallet);
 
@@ -1017,7 +1295,10 @@ CRITICAL SYSTEM FACTS you must always respect:
 - DD SRMs are numbered 11-17. SRM 14 is shared between DD shuttle cars SC 5800 (serves SRMs 15,16,17,14) and SC 5700 (serves SRMs 11,12,13,14)
 - FZ SRMs are numbered 1-10. SRM 5 is shared between FZ shuttle cars SC 2800 (serves SRMs 6,7,8,9,10,5) and SC 2700 (serves SRMs 1,2,3,4,5)
 - Pallet flow: Floor → SG induction → AMTU → Conformity → VL → SC shuttle → SRM
-- Once a pallet enters a lane (e.g. SG 4300), it stays in that lane through AMTU. At Conformity it can go to either VL. Once a VL is chosen, the SC and SRM options are locked to that lane.
+- Induction positions: DD has SG 4301 and SG 4311 (Lane A) and SG 4101 and SG 4111 (Lane B). FZ has SG 1301 and SG 1311 (Lane A) and SG 1101 and SG 1111 (Lane B).
+- A "clean run" means the conveyor was unimpeded from induction to SRM — useful as a baseline
+- A "single" pallet traveled without a pair and may have waited at the shuttle car before moving
+- Pallet pairing: pallets move in pairs on shuttle cars. A single pallet waits for a pair before dispatching, adding dwell time that is NOT a constraint — it is normal system behavior. Do not flag single-pallet dwell at SC as a constraint.
 
 Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what the observer actually sees. Surface the constraint. Times are in minutes.`;
 
@@ -1038,7 +1319,11 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       const srmFZ={};fzPallets.forEach(p=>{if(!p.srmNumber)return;const k="SRM "+p.srmNumber;if(!srmFZ[k])srmFZ[k]={count:0,times:[]};srmFZ[k].count++;const t=totalTime(p);if(t)srmFZ[k].times.push(t);});
       const ddTimes=ddPallets.map(p=>totalTime(p)).filter(Boolean);
       const fzTimes=fzPallets.map(p=>totalTime(p)).filter(Boolean);
-      return "OVERALL SYSTEM ANALYSIS\n\nDAIRY/DELI (independent system):\nTotal: "+ddPallets.length+" pallets | Avg full transit: "+fmtAvg(ddTimes)+"\nCold flags: "+ddPallets.filter(p=>p.coldChainFlag).length+" | Rejections: "+ddPallets.filter(p=>p.rejected).length+"\nSegments: "+ddSegs.join(" | ")+"\nSRM distribution: "+Object.entries(srmDD).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ")+"\n\nFREEZER (independent system — no relation to DD):\nTotal: "+fzPallets.length+" pallets | Avg full transit: "+fmtAvg(fzTimes)+"\nCold flags: "+fzPallets.filter(p=>p.coldChainFlag).length+" | Rejections: "+fzPallets.filter(p=>p.rejected).length+"\nSegments: "+fzSegs.join(" | ")+"\nSRM distribution: "+Object.entries(srmFZ).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ")+"\n\nDock receiving: "+dockSessions.length+" sessions, "+dockSessions.reduce((a,s)=>a+(s.manHrsTotal||0),0).toFixed(2)+" total man-hrs\n\nAnalyze each system independently. Where are the constraints? What should the observer look at next?";
+      const ddClean=ddPallets.filter(p=>p.cleanRun).length;
+      const fzClean=fzPallets.filter(p=>p.cleanRun).length;
+      const ddSingles=ddPallets.filter(p=>p.pairedTravel==="Single").length;
+      const fzSingles=fzPallets.filter(p=>p.pairedTravel==="Single").length;
+      return "OVERALL SYSTEM ANALYSIS\n\nDAIRY/DELI (independent system):\nTotal: "+ddPallets.length+" pallets | Avg full transit: "+fmtAvg(ddTimes)+"\nClean runs: "+ddClean+" | Singles (no pair): "+ddSingles+"\nCold flags: "+ddPallets.filter(p=>p.coldChainFlag).length+" | Rejections: "+ddPallets.filter(p=>p.rejected).length+"\nSegments: "+ddSegs.join(" | ")+"\nSRM distribution: "+Object.entries(srmDD).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ")+"\n\nFREEZER (independent system — no relation to DD):\nTotal: "+fzPallets.length+" pallets | Avg full transit: "+fmtAvg(fzTimes)+"\nClean runs: "+fzClean+" | Singles (no pair): "+fzSingles+"\nCold flags: "+fzPallets.filter(p=>p.coldChainFlag).length+" | Rejections: "+fzPallets.filter(p=>p.rejected).length+"\nSegments: "+fzSegs.join(" | ")+"\nSRM distribution: "+Object.entries(srmFZ).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ")+"\n\nDock receiving: "+dockSessions.length+" sessions, "+dockSessions.reduce((a,s)=>a+(s.manHrsTotal||0),0).toFixed(2)+" total man-hrs\n\nRemember: single pallets waiting at SC for a pair is normal behavior — not a constraint. Analyze each system independently. Where are the constraints? What should the observer look at next?";
     }
     if (mode==="session"&&scope) {
       const s=scope;
@@ -1046,10 +1331,10 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
       const palletDetails=(s.pallets||[]).map((p,i)=>{
         const segTimes=segs.map(seg=>{const t=getSegmentTime(p.taps||{},seg.from,seg.to);return seg.label+": "+fmtSeg(t);}).join(", ");
-        return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")":"");
+        return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")")+(p.cleanRun?" | CLEAN RUN":"")+(p.pairedTravel?" | "+p.pairedTravel.toUpperCase():"");
       });
       const offline=Object.entries(s.offline||{}).filter(e=>e[1]).map(e=>e[0]).join(", ")||"none";
-      return "SESSION ANALYSIS\n\nSystem: "+side+" ("+( side==="DD"?"Dairy/Deli":"Freezer")+", independent system)\nSession: "+s.id+" | Condition: "+s.condition+" | Date: "+new Date(s.startTime).toLocaleDateString()+"\nEquipment offline: "+offline+"\nNotes: "+(s.notes||"none")+"\n\n"+palletDetails.join("\n")+"\n\nAnalyze this session. What patterns stand out? Which segments are slow? Any outliers worth investigating?";
+      return "SESSION ANALYSIS\n\nSystem: "+side+" ("+( side==="DD"?"Dairy/Deli":"Freezer")+", independent system)\nSession: "+s.id+" | Condition: "+s.condition+" | Date: "+new Date(s.startTime).toLocaleDateString()+"\nEquipment offline: "+offline+"\nNotes: "+(s.notes||"none")+"\n\n"+palletDetails.join("\n")+"\n\nAnalyze this session. Clean runs establish baseline speed. Singles at SC waited for a pair — normal behavior. What patterns stand out? Which segments are slow beyond what pairing explains?";
     }
     if (mode==="pallet"&&scope) {
       const p=scope;
@@ -1057,7 +1342,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
       const segTimes=segs.map(seg=>{const t=getSegmentTime(p.taps||{},seg.from,seg.to);return seg.label+": "+fmtSeg(t);}).join("\n");
       const sorted=Object.entries(p.taps||{}).sort((a,b)=>a[1]-b[1]);
-      return "SINGLE PALLET ANALYSIS\n\nSystem: "+side+" ("+( side==="DD"?"Dairy/Deli":"Freezer")+")\nPallet: "+p.id+" | Condition: "+p.condition+"\nTotal transit: "+fmtSeg(totalTime(p))+"\nSRM: "+(p.srmNumber?"SRM "+p.srmNumber:"not recorded")+"\nRejected: "+(p.rejected?"YES":"NO")+"\nCold flag: "+(p.coldChainFlag?"YES — "+p.coldChainFlag.reason:"NO")+"\n\nTap sequence: "+sorted.map(([k,v])=>k+" at "+new Date(v).toLocaleTimeString()).join(" → ")+"\n\nSegments:\n"+segTimes+"\n\nWhere did this pallet slow down? What questions does this raise?";
+      return "SINGLE PALLET ANALYSIS\n\nSystem: "+side+" ("+( side==="DD"?"Dairy/Deli":"Freezer")+")\nPallet: "+p.id+" | Condition: "+p.condition+"\nTotal transit: "+fmtSeg(totalTime(p))+"\nSRM: "+(p.srmNumber?"SRM "+p.srmNumber:"not recorded")+"\nRejected: "+(p.rejected?"YES":"NO")+"\nCold flag: "+(p.coldChainFlag?"YES — "+p.coldChainFlag.reason:"NO")+"\nClean run: "+(p.cleanRun?"YES":"NO")+"\nTravel type: "+(p.pairedTravel||"not recorded")+"\n\nTap sequence: "+sorted.map(([k,v])=>k+" at "+new Date(v).toLocaleTimeString()).join(" → ")+"\n\nSegments:\n"+segTimes+"\n\nIf this was a single, SC dwell time is expected — don't flag it. Where else did this pallet slow down?";
     }
     return null;
   };
@@ -1091,11 +1376,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       } else if (data.error) {
         text = "Error: " + (data.error.message || JSON.stringify(data.error));
       }
-      if (text) {
-        setJonahResponse(text);
-      } else {
-        setJonahError("No response. Try again.");
-      }
+      if (text) { setJonahResponse(text); } else { setJonahError("No response. Try again."); }
     } catch(e) {
       setJonahError("Could not reach Jonah: " + e.message);
     }
@@ -1103,14 +1384,30 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
   };
 
   const downloadCSV = () => {
-    const rows=[["Pallet ID","Side","Condition","Session ID","SRM #","Cold Flag","Cold Flag Reason","Rejected","Total Time (min)","Floor TS","SG43 TS","SG41 TS","SG13 TS","SG11 TS","AMTU43 TS","AMTU41 TS","AMTU13 TS","AMTU11 TS","Conformity TS","VL48 TS","VL47 TS","VL18 TS","VL17 TS","SC58 TS","SC57 TS","SC28 TS","SC27 TS","SRM TS","Seg Floor→SG (min)","Seg SG→AMTU (min)","Seg AMTU→Conf (min)","Seg Conf→VL (min)","Seg VL→SC (min)","Seg SC→SRM (min)","Equipment Offline","Timestamp"]];
+    const rows=[["Pallet ID","Side","Condition","Session ID","SRM #","Cold Flag","Cold Flag Reason","Rejected","Clean Run","Paired Travel","Total Time (min)",
+      "Floor TS","SG4301 TS","SG4311 TS","SG4101 TS","SG4111 TS","SG43 TS (legacy)","SG41 TS (legacy)","SG13 TS (legacy)","SG11 TS (legacy)",
+      "SG1301 TS","SG1311 TS","SG1101 TS","SG1111 TS",
+      "AMTU43 TS","AMTU41 TS","AMTU13 TS","AMTU11 TS","Conformity TS",
+      "VL48 TS","VL47 TS","VL18 TS","VL17 TS","SC58 TS","SC57 TS","SC28 TS","SC27 TS","SRM TS",
+      "Seg Floor→SG (min)","Seg SG→AMTU (min)","Seg AMTU→Conf (min)","Seg Conf→VL (min)","Seg VL→SC (min)","Seg SC→SRM (min)","Equipment Offline","Timestamp"]];
     allPallets.forEach(p=>{
       const taps=p.taps||{};const vals=Object.values(taps);const totalMs=vals.length>=2?Math.max(...vals)-Math.min(...vals):null;
       const segs=p.side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
       const segTimes=segs.map(seg=>{const st=getSegmentTime(taps,seg.from,seg.to);return st?(st/60000).toFixed(3):"";});
       const fmtTs=(k)=>taps[k]?new Date(taps[k]).toISOString():"";
       const offlineList=Object.entries(p.offlineEquip||{}).filter(e=>e[1]).map(e=>e[0]).join("; ");
-      rows.push([p.id||"",p.side||"",p.condition||"",p.sessionId||"",p.srmNumber||"",p.coldChainFlag?"YES":"NO",p.coldChainFlag?(p.coldChainFlag.reason||""):"",p.rejected?"YES":"NO",totalMs?(totalMs/60000).toFixed(3):"",fmtTs("floor"),fmtTs("sg4300"),fmtTs("sg4100"),fmtTs("sg1300"),fmtTs("sg1100"),fmtTs("amtu4300"),fmtTs("amtu4100"),fmtTs("amtu1300"),fmtTs("amtu1100"),fmtTs("dd_conformity")||fmtTs("fz_conformity"),fmtTs("vl4800"),fmtTs("vl4700"),fmtTs("vl1800"),fmtTs("vl1700"),fmtTs("sc5800"),fmtTs("sc5700"),fmtTs("sc2800"),fmtTs("sc2700"),fmtTs("srm"),...segTimes,offlineList,p.endTime?new Date(p.endTime).toISOString():""]);
+      rows.push([p.id||"",p.side||"",p.condition||"",p.sessionId||"",p.srmNumber||"",
+        p.coldChainFlag?"YES":"NO",p.coldChainFlag?(p.coldChainFlag.reason||""):"",
+        p.rejected?"YES":"NO",p.cleanRun?"YES":"NO",p.pairedTravel||"",
+        totalMs?(totalMs/60000).toFixed(3):"",
+        fmtTs("floor"),fmtTs("sg4301"),fmtTs("sg4311"),fmtTs("sg4101"),fmtTs("sg4111"),
+        fmtTs("sg4300"),fmtTs("sg4100"),fmtTs("sg1300"),fmtTs("sg1100"),
+        fmtTs("sg1301"),fmtTs("sg1311"),fmtTs("sg1101"),fmtTs("sg1111"),
+        fmtTs("amtu4300"),fmtTs("amtu4100"),fmtTs("amtu1300"),fmtTs("amtu1100"),
+        fmtTs("dd_conformity")||fmtTs("fz_conformity"),
+        fmtTs("vl4800"),fmtTs("vl4700"),fmtTs("vl1800"),fmtTs("vl1700"),
+        fmtTs("sc5800"),fmtTs("sc5700"),fmtTs("sc2800"),fmtTs("sc2700"),fmtTs("srm"),
+        ...segTimes,offlineList,p.endTime?new Date(p.endTime).toISOString():""]);
     });
     rows.push([]);rows.push(["--- FDD RECEIVING SESSIONS ---"]);
     rows.push(["Session ID","Side","Door","People","Mode","Pallets","Elapsed (min)","Man-Hrs Total","Man-Hrs Per Pallet","Load Description","Date"]);
@@ -1180,6 +1477,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
     </div>
 
     <StatPair left={{label:"Total Pallets",value:allPallets.length,color:TEXT,sub:ddPallets.length+" DD / "+fzPallets.length+" FZ"}} right={{label:"Avg Full Transit",value:fmtMin(avg(activePallets.map(p=>totalTime(p)).filter(Boolean))),color:ORANGE2,sub:activePallets.length+" observations"}}/>
+    <StatPair left={{label:"Clean Runs",value:cleanRuns,color:GREEN,sub:"unimpeded"}} right={{label:"Singles (waited)",value:singles,color:MUTED,sub:"no pair at SC"}}/>
     <StatPair left={{label:"Cold Flags",value:coldFlags,color:coldFlags>0?RED:GREEN}} right={{label:"Rejections",value:rejected,color:rejected>0?RED:GREEN}}/>
 
     <Hr/>
@@ -1268,7 +1566,7 @@ function SettingsTab({ settings, setSettings }) {
     <SLabel>Design Rates — Freezer (pallets/hr)</SLabel>
     {CONDITIONS.map(c=><div key={"fz_"+c}><label style={lbl}>{c}</label><input style={inp} type="number" placeholder="Not set — pending manufacturer data" value={settings["fz_rate_"+c]||""} onChange={e=>setSettings(p=>({...p,["fz_rate_"+c]:e.target.value}))}/></div>)}
     <Hr/>
-    <div style={{fontSize:11,color:FAINT,textAlign:"center"}}>TOC - Jonah Edition v4.0 · Local storage · Google Sheets sync enabled</div>
+    <div style={{fontSize:11,color:FAINT,textAlign:"center"}}>TOC - Jonah Edition v5.0 · Local storage · Google Sheets sync enabled</div>
     <div style={{height:24}}/>
   </div>;
 }
@@ -1279,12 +1577,13 @@ export default function App() {
   const [settings,setSettings] = useStorage("jonah_settings",{coldChainMins:30,userId:"",srm_sc5800:"15,16,17,14",srm_sc5700:"11,12,13,14",srm_sc2800:"6,7,8,9,10,5",srm_sc2700:"1,2,3,4,5"});
 
   const tabs = [
-    {id:"dd",      label:"D/D"},
-    {id:"fz",      label:"FZ"},
-    {id:"unload",  label:<div style={{fontSize:10,lineHeight:1.2}}><div>FDD</div><div>REC</div></div>},
-    {id:"history", label:"Log"},
-    {id:"summary", label:"Sum"},
-    {id:"settings",label:"Set"},
+    {id:"dd",        label:"D/D"},
+    {id:"fz",        label:"FZ"},
+    {id:"unload",    label:<div style={{fontSize:10,lineHeight:1.2}}><div>FDD</div><div>REC</div></div>},
+    {id:"conformity",label:<div style={{fontSize:10,lineHeight:1.2}}><div>CONF</div><div>TPT</div></div>},
+    {id:"history",   label:"Log"},
+    {id:"summary",   label:"Sum"},
+    {id:"settings",  label:"Set"},
   ];
 
   return <div style={{maxWidth:440,margin:"0 auto",background:BG,minHeight:"100vh",display:"flex",flexDirection:"column",color:TEXT,fontFamily:"'Inter','Segoe UI',system-ui,sans-serif"}}>
@@ -1301,15 +1600,16 @@ export default function App() {
       {settings.userId&&<Chip label={settings.userId} color="orange"/>}
     </div>
     <div style={{display:"flex",background:SURFACE,borderBottom:"1px solid "+BORDER}}>
-      {tabs.map(t=><div key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:"10px 4px",textAlign:"center",fontSize:11,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",color:tab===t.id?ORANGE:MUTED,cursor:"pointer",borderBottom:tab===t.id?"2px solid "+ORANGE:"2px solid transparent"}}>{t.label}</div>)}
+      {tabs.map(t=><div key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:"10px 2px",textAlign:"center",fontSize:11,fontWeight:700,letterSpacing:0.3,textTransform:"uppercase",color:tab===t.id?ORANGE:MUTED,cursor:"pointer",borderBottom:tab===t.id?"2px solid "+ORANGE:"2px solid transparent"}}>{t.label}</div>)}
     </div>
     <div style={{flex:1,overflowY:"auto",padding:"4px 18px 0"}}>
-      {tab==="dd"      &&<ObserverTab side="DD" nodes={DD_NODES} settings={settings}/>}
-      {tab==="fz"      &&<ObserverTab side="FZ" nodes={FZ_NODES} settings={settings}/>}
-      {tab==="unload"  &&<UnloadingTab settings={settings}/>}
-      {tab==="history" &&<HistoryTab/>}
-      {tab==="summary" &&<SummaryTab/>}
-      {tab==="settings"&&<SettingsTab settings={settings} setSettings={setSettings}/>}
+      {tab==="dd"         &&<ObserverTab side="DD" nodes={DD_NODES} settings={settings}/>}
+      {tab==="fz"         &&<ObserverTab side="FZ" nodes={FZ_NODES} settings={settings}/>}
+      {tab==="unload"     &&<UnloadingTab settings={settings}/>}
+      {tab==="conformity" &&<ConformityTab/>}
+      {tab==="history"    &&<HistoryTab/>}
+      {tab==="summary"    &&<SummaryTab/>}
+      {tab==="settings"   &&<SettingsTab settings={settings} setSettings={setSettings}/>}
     </div>
   </div>;
 }
