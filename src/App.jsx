@@ -1101,7 +1101,7 @@ function UnloadingTab({ settings }) {
     setSessions(p=>[...p,{id:"DK"+Date.now().toString(36).toUpperCase().slice(-5),ts:Date.now(),meta,mode,
       data:mode==="single"?single:batch.filter(p=>p.floorTs||p.inductTs),
       sessionElapsed,palletCount,manHrsTotal,manHrsPerPallet,
-      crewGaps,totalGapTime:crewGaps.reduce((a,g)=>a+g.duration,0)}]);
+      crewGaps,totalGapTime:crewGaps.reduce((a,g)=>a+g.duration,0),isTest:false}]);
     setMode(null); setSingle({floor:null,induct:null});
     setBatch(Array(5).fill(null).map((_,i)=>({id:i+1,floorTs:null,inductTs:null})));
     setBatchStart(null); setMeta({side:"FZ",door:"",people:"2",induct:"SG 1301",desc:""});
@@ -1124,15 +1124,35 @@ function UnloadingTab({ settings }) {
     <Hr/>
     <Btn variant="primary" onClick={()=>setMode("single")}>Single Pallet</Btn>
     <Btn variant="outline" onClick={()=>setMode("batch")}>Batch Mode — up to 5</Btn>
-    {sessions.length>0&&<><Hr/><SLabel>Recent Sessions</SLabel>
-      {sessions.slice(-3).reverse().map(s=><Card key={s.id}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-          <span style={{fontSize:13,fontWeight:700,color:ORANGE2}}>{s.id}</span>
-          <Chip label={s.meta.side} color={s.meta.side==="FZ"?"blue":"orange"}/>
-        </div>
-        <div style={{fontSize:12,color:MUTED}}>Door {s.meta.door} · {s.meta.people} people · {s.palletCount} pallets</div>
-        {s.manHrsPerPallet!=null&&<div style={{fontSize:12,color:GREEN,marginTop:4}}>{s.manHrsPerPallet.toFixed(3)} man-hrs/pallet</div>}
-      </Card>)}
+    {sessions.length>0&&<>
+      <Hr/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <SLabel mt={0}>Recent Sessions</SLabel>
+        {sessions.filter(s=>s.isTest).length>0&&(
+          <button onClick={()=>{if(window.confirm("Clear "+sessions.filter(s=>s.isTest).length+" test session(s)?"))setSessions(p=>p.filter(s=>!s.isTest));}}
+            style={{background:"rgba(224,82,82,0.15)",border:"1px solid rgba(224,82,82,0.4)",color:RED,fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit"}}>
+            Clear {sessions.filter(s=>s.isTest).length} Test{sessions.filter(s=>s.isTest).length!==1?"s":""}
+          </button>
+        )}
+      </div>
+      <div style={{fontSize:11,color:FAINT,marginBottom:10,marginTop:-6}}>← Swipe left to delete or mark as test</div>
+      {sessions.slice(-5).reverse().map(s=>(
+        <SwipeableRow key={s.id} isTest={s.isTest}
+          onDelete={()=>{if(window.confirm("Delete session "+s.id+"?"))setSessions(p=>p.filter(x=>x.id!==s.id));}}
+          onToggleTest={()=>setSessions(p=>p.map(x=>x.id===s.id?{...x,isTest:!x.isTest}:x))}>
+          <div style={{background:s.isTest?"rgba(240,192,64,0.07)":CARD,border:"1px solid "+(s.isTest?"rgba(240,192,64,0.3)":BORDER),borderRadius:10,padding:"12px 14px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <span style={{fontSize:13,fontWeight:700,color:s.isTest?YELLOW:ORANGE2}}>{s.id}</span>
+                <Chip label={s.meta.side} color={s.meta.side==="FZ"?"blue":"orange"}/>
+                {s.isTest&&<Chip label="TEST" color="yellow"/>}
+              </div>
+            </div>
+            <div style={{fontSize:12,color:MUTED}}>Door {s.meta.door} · {s.meta.people} people · {s.palletCount} pallets</div>
+            {s.manHrsPerPallet!=null&&<div style={{fontSize:12,color:s.isTest?FAINT:GREEN,marginTop:4}}>{s.manHrsPerPallet.toFixed(3)} man-hrs/pallet</div>}
+          </div>
+        </SwipeableRow>
+      ))}
     </>}
   </div>;
 
@@ -1262,6 +1282,9 @@ function HistoryTab() {
     setConfirmDelete(null);
   };
   const deleteDockSession = (id) => { setDockSessions(prev=>prev.filter(s=>s.id!==id)); setConfirmDelete(null); };
+  const toggleTestDock = (id) => { setDockSessions(prev=>prev.map(s=>s.id===id?{...s,isTest:!s.isTest}:s)); };
+  const clearTestDock = () => { setDockSessions(prev=>prev.filter(s=>!s.isTest)); setConfirmDelete(null); };
+  const dockTestCount = dockSessions.filter(s=>s.isTest).length;
 
   return <div>
     {confirmDelete?.type==="session"&&<Confirm title="Delete Session?"
@@ -1324,22 +1347,38 @@ function HistoryTab() {
     </>}
 
     {activeTab==="dock"&&<>
-      <SLabel mt={0}>FDD Receiving Sessions ({dockSessions.length})</SLabel>
+      {confirmDelete?.type==="clearTestDock"&&<Confirm title={"Clear "+dockTestCount+" Test Session"+(dockTestCount!==1?"s":"")+"?"}
+        body="Permanently deletes all FDD sessions marked as test data. Real data is not affected."
+        yesLabel="Clear Test Sessions" noLabel="Cancel"
+        onYes={clearTestDock} onNo={()=>setConfirmDelete(null)}/>}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,marginTop:4}}>
+        <SLabel mt={0}>FDD Receiving Sessions ({dockSessions.length})</SLabel>
+        {dockTestCount>0&&(
+          <button onClick={()=>setConfirmDelete({type:"clearTestDock"})}
+            style={{background:"rgba(224,82,82,0.15)",border:"1px solid rgba(224,82,82,0.4)",color:RED,fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit"}}>
+            Clear {dockTestCount} Test{dockTestCount!==1?"s":""}
+          </button>
+        )}
+      </div>
       {dockSessions.length===0&&<div style={{color:MUTED,fontSize:13,padding:"12px 0"}}>No sessions yet.</div>}
+      {dockSessions.length>0&&<div style={{fontSize:11,color:FAINT,marginBottom:10,marginTop:-6}}>← Swipe left to delete or mark as test</div>}
       {dockSessions.slice().reverse().map(s=>(
-        <Card key={s.id}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <Chip label={s.meta.side} color={s.meta.side==="FZ"?"blue":"orange"}/>
-              <span style={{fontSize:13,fontWeight:700,color:ORANGE2}}>{s.id}</span>
+        <SwipeableRow key={s.id} isTest={s.isTest}
+          onDelete={()=>setConfirmDelete({type:"dock",id:s.id})}
+          onToggleTest={()=>toggleTestDock(s.id)}>
+          <div style={{background:s.isTest?"rgba(240,192,64,0.07)":CARD,border:"1px solid "+(s.isTest?"rgba(240,192,64,0.3)":BORDER),borderRadius:10,padding:"12px 14px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                <Chip label={s.meta.side} color={s.meta.side==="FZ"?"blue":"orange"}/>
+                <span style={{fontSize:13,fontWeight:700,color:s.isTest?YELLOW:ORANGE2}}>{s.id}</span>
+                {s.isTest&&<Chip label="TEST" color="yellow"/>}
+              </div>
             </div>
-            <Btn variant="danger" small onClick={()=>setConfirmDelete({type:"dock",id:s.id})}
-              style={{width:"auto",padding:"4px 10px",marginBottom:0,fontSize:11}}>Delete</Btn>
+            <div style={{fontSize:12,color:MUTED}}>Door {s.meta.door} · {s.meta.people} people · {s.palletCount} pallets</div>
+            {s.manHrsPerPallet!=null&&<div style={{fontSize:12,color:s.isTest?FAINT:GREEN,marginTop:4}}>{s.manHrsPerPallet.toFixed(3)} man-hrs/pallet · {s.manHrsTotal?.toFixed(2)} total</div>}
+            {s.meta.desc&&<div style={{fontSize:11,color:FAINT,marginTop:4}}>{s.meta.desc}</div>}
           </div>
-          <div style={{fontSize:12,color:MUTED}}>Door {s.meta.door} · {s.meta.people} people · {s.palletCount} pallets</div>
-          {s.manHrsPerPallet!=null&&<div style={{fontSize:12,color:GREEN,marginTop:4}}>{s.manHrsPerPallet.toFixed(3)} man-hrs/pallet · {s.manHrsTotal?.toFixed(2)} total</div>}
-          {s.meta.desc&&<div style={{fontSize:11,color:FAINT,marginTop:4}}>{s.meta.desc}</div>}
-        </Card>
+        </SwipeableRow>
       ))}
     </>}
     <div style={{height:24}}/>
@@ -1553,8 +1592,8 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
         ...segTimes,offlineList,p.endTime?new Date(p.endTime).toISOString():""]);
     });
     rows.push([]);rows.push(["--- FDD RECEIVING SESSIONS ---"]);
-    rows.push(["Session ID","Side","Door","People","Mode","Pallets","Elapsed (min)","Man-Hrs Total","Man-Hrs Per Pallet","Load Description","Date"]);
-    dockSessions.forEach(s=>{rows.push([s.id||"",s.meta?.side||"",s.meta?.door||"",s.meta?.people||"",s.mode||"",s.palletCount||"",s.sessionElapsed?(s.sessionElapsed/60000).toFixed(2):"",s.manHrsTotal?s.manHrsTotal.toFixed(3):"",s.manHrsPerPallet?s.manHrsPerPallet.toFixed(3):"",s.meta?.desc||"",s.ts?new Date(s.ts).toISOString():""]);});
+    rows.push(["Session ID","Side","Door","People","Mode","Pallets","Elapsed (min)","Man-Hrs Total","Man-Hrs Per Pallet","Load Description","Is Test","Date"]);
+    dockSessions.forEach(s=>{rows.push([s.id||"",s.meta?.side||"",s.meta?.door||"",s.meta?.people||"",s.mode||"",s.palletCount||"",s.sessionElapsed?(s.sessionElapsed/60000).toFixed(2):"",s.manHrsTotal?s.manHrsTotal.toFixed(3):"",s.manHrsPerPallet?s.manHrsPerPallet.toFixed(3):"",s.meta?.desc||"",s.isTest?"YES":"NO",s.ts?new Date(s.ts).toISOString():""]);});
     const conformitySessions = (() => { try { const r=localStorage.getItem("conformity_sessions"); return r?JSON.parse(r):[]; } catch { return []; } })();
     if(conformitySessions.length>0){
       rows.push([]);rows.push(["--- CONFORMITY THROUGHPUT (CTC) SESSIONS ---"]);
