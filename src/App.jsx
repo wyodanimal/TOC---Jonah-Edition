@@ -1,10 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ── Lane definitions with lock logic ─────────────────────
-// Lane A = left lane (4300/1300), Lane B = right lane (4100/1100)
 const DD_LANE_MAP = {
   sg4301: "A", sg4311: "A", sg4101: "B", sg4111: "B",
-  // legacy keys for existing data migration
   sg4300: "A", sg4100: "B",
   amtu4300: "A", amtu4100: "B",
   vl4800: "A", vl4700: "B",
@@ -12,14 +10,12 @@ const DD_LANE_MAP = {
 };
 const FZ_LANE_MAP = {
   sg1301: "A", sg1311: "A", sg1101: "B", sg1111: "B",
-  // legacy keys for existing data migration
   sg1300: "A", sg1100: "B",
   amtu1300: "A", amtu1100: "B",
   vl1800: "A", vl1700: "B",
   sc2800: "A", sc2700: "B",
 };
 
-// Default SRM assignments per shuttle — configurable in settings
 const DEFAULT_SRM_ASSIGNMENTS = {
   sc5800: [15, 16, 17, 14],
   sc5700: [11, 12, 13, 14],
@@ -92,8 +88,6 @@ const NODE_SHORT = {
 };
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyL1gPRqiWdDpLyRY7eUXjHADAXyG7pOf3kFmnHZDyJDrnFZKPa6Pu7VTsMlrv25G7T/exec";
-
-// Session auto-resume threshold: 2 hours in ms
 const SESSION_RESUME_THRESHOLD = 2 * 60 * 60 * 1000;
 
 // ── Colors ────────────────────────────────────────────────
@@ -110,6 +104,7 @@ const BLUE    = "#4a9ede";
 const TEXT    = "#e8e6e0";
 const MUTED   = "#8b8fa8";
 const FAINT   = "#555970";
+const YELLOW  = "#f0c040";
 
 // ── Helpers ───────────────────────────────────────────────
 function fmt(ms) {
@@ -225,6 +220,7 @@ function Chip({ label, color="faint" }) {
     green: {bg:"rgba(76,175,125,0.18)", fg:GREEN,  br:"rgba(76,175,125,0.35)"},
     red:   {bg:"rgba(224,82,82,0.18)",  fg:RED,    br:"rgba(224,82,82,0.35)"},
     blue:  {bg:"rgba(74,158,222,0.18)", fg:BLUE,   br:"rgba(74,158,222,0.35)"},
+    yellow:{bg:"rgba(240,192,64,0.18)", fg:YELLOW, br:"rgba(240,192,64,0.35)"},
     faint: {bg:"rgba(85,89,112,0.25)",  fg:MUTED,  br:BORDER},
   };
   const c = map[color]||map.faint;
@@ -246,6 +242,7 @@ function Btn({ variant="default", children, onClick, style, small, disabled }) {
     ghost:  {background:"transparent",color:MUTED,  border:"1px solid "+BORDER},
     active: {background:"rgba(232,118,10,0.15)",color:ORANGE2,border:"1px solid "+ORANGE},
     locked: {background:CARD,   color:FAINT,  border:"1px solid "+BORDER},
+    warn:   {background:"rgba(240,192,64,0.15)",color:YELLOW,border:"1px solid rgba(240,192,64,0.4)"},
   }[variant]||{background:CARD,color:TEXT,border:"1px solid "+BORDER};
   return <button onClick={onClick} disabled={disabled} style={{...v,display:"block",width:"100%",padding:small?"11px 12px":"15px 12px",fontSize:small?12:14,fontWeight:700,fontFamily:"inherit",borderRadius:8,cursor:disabled?"not-allowed":"pointer",textAlign:"center",marginBottom:small?6:8,opacity:disabled?0.4:1,letterSpacing:0.3,...style}}>{children}</button>;
 }
@@ -291,7 +288,82 @@ function Confirm({ title, body, onYes, onNo, yesLabel="Confirm", noLabel="Cancel
   </ModalWrap>;
 }
 
-// ── Pairing Modal — shown after SC tap ───────────────────
+// ── Swipeable Row — swipe left to reveal delete/test actions ──
+function SwipeableRow({ children, onDelete, onToggleTest, isTest }) {
+  const startX = useRef(null);
+  const currentX = useRef(0);
+  const [offset, setOffset] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const THRESHOLD = 60;
+  const ACTION_WIDTH = isTest ? 160 : 160; // two buttons: delete + test toggle
+
+  const handleTouchStart = (e) => {
+    startX.current = e.touches[0].clientX;
+    currentX.current = offset;
+  };
+  const handleTouchMove = (e) => {
+    const dx = e.touches[0].clientX - startX.current;
+    const next = Math.min(0, Math.max(-ACTION_WIDTH, currentX.current + dx));
+    setOffset(next);
+  };
+  const handleTouchEnd = () => {
+    if (offset < -THRESHOLD) {
+      setOffset(-ACTION_WIDTH);
+      setRevealed(true);
+    } else {
+      setOffset(0);
+      setRevealed(false);
+    }
+  };
+  const close = () => { setOffset(0); setRevealed(false); };
+
+  return (
+    <div style={{position:"relative",overflow:"hidden",borderRadius:10,marginBottom:8}}>
+      {/* Action buttons behind the row */}
+      <div style={{
+        position:"absolute",right:0,top:0,bottom:0,width:ACTION_WIDTH,
+        display:"flex",alignItems:"stretch",
+      }}>
+        <button
+          onClick={() => { close(); onToggleTest(); }}
+          style={{
+            flex:1,background:isTest?"rgba(76,175,125,0.25)":"rgba(240,192,64,0.2)",
+            border:"none",color:isTest?GREEN:YELLOW,fontSize:11,fontWeight:700,
+            fontFamily:"inherit",cursor:"pointer",letterSpacing:0.5,
+            borderRadius:0,
+          }}
+        >
+          {isTest ? "✓ REAL\nDATA" : "⚐ MARK\nTEST"}
+        </button>
+        <button
+          onClick={() => { close(); onDelete(); }}
+          style={{
+            flex:1,background:"rgba(224,82,82,0.25)",border:"none",
+            color:RED,fontSize:11,fontWeight:700,fontFamily:"inherit",
+            cursor:"pointer",letterSpacing:0.5,
+            borderRadius:"0 10px 10px 0",
+          }}
+        >
+          🗑 DELETE
+        </button>
+      </div>
+      {/* Sliding content */}
+      <div
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        style={{
+          transform:`translateX(${offset}px)`,
+          transition:startX.current===null?"transform 0.2s ease":"none",
+          position:"relative",zIndex:1,
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function PairingModal({ scLabel, onSelect }) {
   return <ModalWrap>
     <div style={{background:SURFACE,border:"1px solid "+ORANGE,borderRadius:14,padding:24,width:"100%",maxWidth:360}}>
@@ -377,7 +449,6 @@ function SessionSetup({ side, onStart }) {
 function ObserverTab({ side, nodes, settings }) {
   const [sessions, setSessions] = useStorage("sessions_"+side, []);
 
-  // ── Session auto-resume ──────────────────────────────────
   const [activeSession, setActiveSession] = useState(() => {
     try {
       const raw = localStorage.getItem("sessions_"+side);
@@ -385,7 +456,6 @@ function ObserverTab({ side, nodes, settings }) {
       const saved = JSON.parse(raw);
       if (!saved || !saved.length) return null;
       const last = saved[saved.length - 1];
-      // Resume if session has no endTime and was started within 2 hours
       if (!last.endTime && last.startTime && (Date.now() - last.startTime) < SESSION_RESUME_THRESHOLD) {
         return last;
       }
@@ -401,7 +471,7 @@ function ObserverTab({ side, nodes, settings }) {
   const [coldFlag, setColdFlag] = useState(null);
   const [slowFlag, setSlowFlag] = useState(null);
   const [srmPicker, setSrmPicker] = useState(false);
-  const [pairingModal, setPairingModal] = useState(null); // { scKey, scLabel }
+  const [pairingModal, setPairingModal] = useState(null);
   const [view, setView] = useState(activeSession ? "observer" : "setup");
   const [errors, setErrors] = useState([]);
   const [errorActive, setErrorActive] = useState(false);
@@ -455,7 +525,6 @@ function ObserverTab({ side, nodes, settings }) {
   };
 
   const isLaneLocked = (optId) => {
-    // AMTU: locked by SG selection permanently
     if (optId.startsWith("amtu")) {
       const sgTapped = pallet && Object.keys(pallet.taps).find(k => k.startsWith("sg"));
       if (!sgTapped) return false;
@@ -463,7 +532,6 @@ function ObserverTab({ side, nodes, settings }) {
       const optLane = laneMap[optId];
       return optLane && optLane !== sgLane;
     }
-    // VL: free until a VL is tapped, then lock opposite lane
     if (optId.startsWith("vl")) {
       const anyVLTapped = pallet && Object.keys(pallet.taps).some(k => k.startsWith("vl"));
       if (!anyVLTapped) return false;
@@ -471,7 +539,6 @@ function ObserverTab({ side, nodes, settings }) {
       const optLane = laneMap[optId];
       return optLane && optLane !== lockedLane;
     }
-    // SC: locked by VL selection
     if (optId.startsWith("sc")) {
       if (!lockedLane) return false;
       const optLane = laneMap[optId];
@@ -488,20 +555,17 @@ function ObserverTab({ side, nodes, settings }) {
     const nodeLane = laneMap[key];
     const conformityK = side === "DD" ? "dd_conformity" : "fz_conformity";
     if (key === conformityK) {
-      setLockedLane(null); // reset VL/SC lock at conformity, but AMTU stays locked via SG tap
+      setLockedLane(null);
     } else if (nodeLane && key.startsWith("vl")) {
-      setLockedLane(nodeLane); // VL tap locks SC
+      setLockedLane(nodeLane);
     }
-    // SG tap does NOT set lockedLane — AMTU locking handled by isLaneLocked via pallet.taps
     if (key.startsWith("sc")) {
       setLockedSC(key);
-      // Record tap first, then ask pairing question
       if (prevEntries.length>0) {
         const seg = ts-prevEntries[prevEntries.length-1][1];
         if (seg>20*60*1000) { setSlowFlag({key,seg,updated,isSC:true}); return; }
       }
       setPallet(updated);
-      // Find the label for the SC button
       const scNode = nodes.find(n => n.isSC && n.options?.some(o => o.id === key));
       const scLabel = scNode?.options?.find(o => o.id === key)?.label || key;
       setPairingModal({ scKey: key, scLabel });
@@ -647,7 +711,6 @@ function ObserverTab({ side, nodes, settings }) {
         {conformityTapped()&&<Btn variant="danger" small onClick={rejectPallet} style={{width:"auto",padding:"6px 14px",marginBottom:0}}>Reject</Btn>}
       </div>
 
-      {/* Error timer */}
       {errorActive
         ? <div style={{background:"rgba(224,82,82,0.12)",border:"2px solid "+RED,borderRadius:8,padding:"10px 14px",marginBottom:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -688,11 +751,9 @@ function ObserverTab({ side, nodes, settings }) {
         }
 
         if (node.isLaneSplit) {
-          // SG for DD: 4 buttons in 2x2 grid
           const isSGDD = side==="DD" && node.options?.some(o=>o.id.startsWith("sg43")||o.id.startsWith("sg41"));
           const isSGFZ = side==="FZ" && node.options?.some(o=>o.id.startsWith("sg13")||o.id.startsWith("sg11"));
           if (isSGDD || isSGFZ) {
-            // Any SG tapped = lock all others out
             const anySGTapped = node.options.some(o => hasTap(o.id));
             const laneAOpts = node.options.filter(o => o.lane === "A");
             const laneBOpts = node.options.filter(o => o.lane === "B");
@@ -768,6 +829,7 @@ function ConformityTab() {
   const [clickCount, setClickCount] = useState(0);
   const [showResult, setShowResult] = useState(null);
   const [lastClickTs, setLastClickTs] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);
 
   useEffect(() => {
     if (!running) return;
@@ -804,6 +866,7 @@ function ConformityTab() {
       id: "CF" + Date.now().toString(36).toUpperCase().slice(-5),
       ts: endTs, side, mode, startTs, endTs, durationMs,
       palletCount: clickCount, palletsPerHour, palletsPerMin,
+      isTest: false,
     };
     setConformitySessions(prev => [...prev, session]);
     setShowResult(session);
@@ -816,13 +879,54 @@ function ConformityTab() {
     setShowResult(null); setSide(null); setMode(null); setLastClickTs(null);
   };
 
-  const ddSessions = conformitySessions.filter(s => s.side === "DD");
-  const fzSessions = conformitySessions.filter(s => s.side === "FZ");
+  // ── Session management ────────────────────────────────
+  const deleteSession = (id) => {
+    setConformitySessions(prev => prev.filter(s => s.id !== id));
+  };
+
+  const toggleTest = (id) => {
+    setConformitySessions(prev => prev.map(s => s.id === id ? {...s, isTest: !s.isTest} : s));
+  };
+
+  const clearTestSessions = () => {
+    setConformitySessions(prev => prev.filter(s => !s.isTest));
+    setConfirmAction(null);
+  };
+
+  const testCount = conformitySessions.filter(s => s.isTest).length;
+
+  // ── Stats (exclude test sessions) ────────────────────
+  const realSessions = conformitySessions.filter(s => !s.isTest);
+  const ddSessions = realSessions.filter(s => s.side === "DD");
+  const fzSessions = realSessions.filter(s => s.side === "FZ");
   const avgRate = (arr, m) => { const f=arr.filter(s=>s.mode===m); if(!f.length)return null; return f.reduce((a,s)=>a+s.palletsPerHour,0)/f.length; };
   const maxRate = (arr, m) => { const f=arr.filter(s=>s.mode===m); if(!f.length)return null; return Math.max(...f.map(s=>s.palletsPerHour)); };
   const minRate = (arr, m) => { const f=arr.filter(s=>s.mode===m); if(!f.length)return null; return Math.min(...f.map(s=>s.palletsPerHour)); };
 
   return <div>
+    {confirmAction?.type === "clearTest" && (
+      <Confirm
+        title={`Clear ${testCount} Test Session${testCount!==1?"s":""}?`}
+        body="This permanently deletes all sessions marked as test data. Real data is not affected."
+        yesLabel="Clear Test Sessions"
+        noLabel="Cancel"
+        dangerNo={false}
+        onYes={clearTestSessions}
+        onNo={() => setConfirmAction(null)}
+      />
+    )}
+    {confirmAction?.type === "deleteOne" && (
+      <Confirm
+        title="Delete Session?"
+        body={"Permanently delete session " + confirmAction.id + "?"}
+        yesLabel="Delete"
+        noLabel="Cancel"
+        dangerNo
+        onYes={() => { deleteSession(confirmAction.id); setConfirmAction(null); }}
+        onNo={() => setConfirmAction(null)}
+      />
+    )}
+
     <SLabel mt={4}>Conformity Throughput Counter</SLabel>
 
     {showResult && <div style={{background:"rgba(76,175,125,0.08)",border:"2px solid "+GREEN,borderRadius:10,padding:"16px",marginBottom:16}}>
@@ -873,9 +977,10 @@ function ConformityTab() {
       </>}
     </>}
 
-    {conformitySessions.length > 0 && <>
+    {/* ── Stats summary (real data only) ── */}
+    {realSessions.length > 0 && <>
       <Hr/>
-      <SLabel>Rate Summary</SLabel>
+      <SLabel>Rate Summary {testCount > 0 && <span style={{color:FAINT,fontSize:9,fontWeight:400}}>· test data excluded</span>}</SLabel>
       {["DD","FZ"].map(s => {
         const arr = s==="DD"?ddSessions:fzSessions;
         const uc=avgRate(arr,"uncontested"); const co=avgRate(arr,"constrained");
@@ -891,16 +996,54 @@ function ConformityTab() {
           {uc&&co&&<div style={{fontSize:12,color:MUTED}}>Downstream tax: <span style={{color:RED,fontWeight:700}}>{(uc-co).toFixed(1)}/hr ({(((uc-co)/uc)*100).toFixed(0)}% loss)</span></div>}
         </Card>;
       })}
-      <SLabel>Recent Sessions</SLabel>
-      {conformitySessions.slice().reverse().slice(0,8).map(s => <Card key={s.id} style={{marginBottom:6}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:TEXT}}>{s.side} · <span style={{color:s.mode==="uncontested"?GREEN:ORANGE2}}>{s.mode==="uncontested"?"Uncontested":"Constrained"}</span></div>
-            <div style={{fontSize:11,color:MUTED,marginTop:2}}>{s.palletCount} pallets · {fmt(s.durationMs)} · {new Date(s.ts).toLocaleDateString()}</div>
+    </>}
+
+    {/* ── Session list with swipe-to-delete ── */}
+    {conformitySessions.length > 0 && <>
+      <Hr/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <SLabel mt={0}>Sessions ({conformitySessions.length})</SLabel>
+        {testCount > 0 && (
+          <button
+            onClick={() => setConfirmAction({type:"clearTest"})}
+            style={{background:"rgba(224,82,82,0.15)",border:"1px solid rgba(224,82,82,0.4)",color:RED,fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",letterSpacing:0.5}}
+          >
+            Clear {testCount} Test{testCount!==1?"s":""}
+          </button>
+        )}
+      </div>
+      <div style={{fontSize:11,color:FAINT,marginBottom:10,marginTop:-6}}>← Swipe left to delete or mark as test</div>
+
+      {conformitySessions.slice().reverse().map(s => (
+        <SwipeableRow
+          key={s.id}
+          isTest={s.isTest}
+          onDelete={() => setConfirmAction({type:"deleteOne", id:s.id})}
+          onToggleTest={() => toggleTest(s.id)}
+        >
+          <div style={{
+            background: s.isTest ? "rgba(240,192,64,0.07)" : CARD,
+            border: "1px solid " + (s.isTest ? "rgba(240,192,64,0.3)" : BORDER),
+            borderRadius:10,
+            padding:"12px 14px",
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4,flexWrap:"wrap"}}>
+                  <span style={{fontSize:12,fontWeight:700,color:s.isTest?YELLOW:TEXT}}>{s.id}</span>
+                  <Chip label={s.side} color={s.side==="DD"?"orange":"blue"}/>
+                  <Chip label={s.mode==="uncontested"?"Uncontested":"Constrained"} color={s.mode==="uncontested"?"green":"faint"}/>
+                  {s.isTest && <Chip label="TEST" color="yellow"/>}
+                </div>
+                <div style={{fontSize:11,color:MUTED}}>{s.palletCount} pallets · {fmt(s.durationMs)} · {new Date(s.ts).toLocaleDateString()}</div>
+              </div>
+              <div style={{fontSize:20,fontWeight:700,color:s.isTest?FAINT:ORANGE2,marginLeft:8}}>
+                {s.palletsPerHour.toFixed(1)}<span style={{fontSize:10,color:MUTED}}>/hr</span>
+              </div>
+            </div>
           </div>
-          <div style={{fontSize:18,fontWeight:700,color:ORANGE2}}>{s.palletsPerHour.toFixed(1)}<span style={{fontSize:10,color:MUTED}}>/hr</span></div>
-        </div>
-      </Card>)}
+        </SwipeableRow>
+      ))}
     </>}
     <div style={{height:24}}/>
   </div>;
@@ -1334,7 +1477,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
         return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")":"")+(p.cleanRun?" | CLEAN RUN":"")+(p.pairedTravel?" | "+p.pairedTravel.toUpperCase():"");
       });
       const offline=Object.entries(s.offline||{}).filter(e=>e[1]).map(e=>e[0]).join(", ")||"none";
-      return "SESSION ANALYSIS\n\nSystem: "+side+" ("+( side==="DD"?"Dairy/Deli":"Freezer")+", independent system)\nSession: "+s.id+" | Condition: "+s.condition+" | Date: "+new Date(s.startTime).toLocaleDateString()+"\nEquipment offline: "+offline+"\nNotes: "+(s.notes||"none")+"\n\n"+palletDetails.join("\n")+"\n\nAnalyze this session. Clean runs establish baseline speed. Singles at SC waited for a pair — normal behavior. What patterns stand out? Which segments are slow beyond what pairing explains?";
+      return "SESSION ANALYSIS\n\nSystem: "+side+" ("+(side==="DD"?"Dairy/Deli":"Freezer")+", independent system)\nSession: "+s.id+" | Condition: "+s.condition+" | Date: "+new Date(s.startTime).toLocaleDateString()+"\nEquipment offline: "+offline+"\nNotes: "+(s.notes||"none")+"\n\n"+palletDetails.join("\n")+"\n\nAnalyze this session. Clean runs establish baseline speed. Singles at SC waited for a pair — normal behavior. What patterns stand out? Which segments are slow beyond what pairing explains?";
     }
     if (mode==="pallet"&&scope) {
       const p=scope;
@@ -1342,7 +1485,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
       const segTimes=segs.map(seg=>{const t=getSegmentTime(p.taps||{},seg.from,seg.to);return seg.label+": "+fmtSeg(t);}).join("\n");
       const sorted=Object.entries(p.taps||{}).sort((a,b)=>a[1]-b[1]);
-      return "SINGLE PALLET ANALYSIS\n\nSystem: "+side+" ("+( side==="DD"?"Dairy/Deli":"Freezer")+")\nPallet: "+p.id+" | Condition: "+p.condition+"\nTotal transit: "+fmtSeg(totalTime(p))+"\nSRM: "+(p.srmNumber?"SRM "+p.srmNumber:"not recorded")+"\nRejected: "+(p.rejected?"YES":"NO")+"\nCold flag: "+(p.coldChainFlag?"YES — "+p.coldChainFlag.reason:"NO")+"\nClean run: "+(p.cleanRun?"YES":"NO")+"\nTravel type: "+(p.pairedTravel||"not recorded")+"\n\nTap sequence: "+sorted.map(([k,v])=>k+" at "+new Date(v).toLocaleTimeString()).join(" → ")+"\n\nSegments:\n"+segTimes+"\n\nIf this was a single, SC dwell time is expected — don't flag it. Where else did this pallet slow down?";
+      return "SINGLE PALLET ANALYSIS\n\nSystem: "+side+" ("+(side==="DD"?"Dairy/Deli":"Freezer")+")\nPallet: "+p.id+" | Condition: "+p.condition+"\nTotal transit: "+fmtSeg(totalTime(p))+"\nSRM: "+(p.srmNumber?"SRM "+p.srmNumber:"not recorded")+"\nRejected: "+(p.rejected?"YES":"NO")+"\nCold flag: "+(p.coldChainFlag?"YES — "+p.coldChainFlag.reason:"NO")+"\nClean run: "+(p.cleanRun?"YES":"NO")+"\nTravel type: "+(p.pairedTravel||"not recorded")+"\n\nTap sequence: "+sorted.map(([k,v])=>k+" at "+new Date(v).toLocaleTimeString()).join(" → ")+"\n\nSegments:\n"+segTimes+"\n\nIf this was a single, SC dwell time is expected — don't flag it. Where else did this pallet slow down?";
     }
     return null;
   };
@@ -1415,8 +1558,8 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
     const conformitySessions = (() => { try { const r=localStorage.getItem("conformity_sessions"); return r?JSON.parse(r):[]; } catch { return []; } })();
     if(conformitySessions.length>0){
       rows.push([]);rows.push(["--- CONFORMITY THROUGHPUT (CTC) SESSIONS ---"]);
-      rows.push(["Session ID","Side","Mode","Pallets Counted","Duration (min)","Pallets/Hr","Pallets/Min","Date"]);
-      conformitySessions.forEach(s=>{rows.push([s.id||"",s.side||"",s.mode||"",s.palletCount||"",s.durationMs?(s.durationMs/60000).toFixed(2):"",s.palletsPerHour?s.palletsPerHour.toFixed(2):"",s.palletsPerMin?s.palletsPerMin.toFixed(2):"",s.ts?new Date(s.ts).toISOString():""]);});
+      rows.push(["Session ID","Side","Mode","Pallets Counted","Duration (min)","Pallets/Hr","Pallets/Min","Is Test","Date"]);
+      conformitySessions.forEach(s=>{rows.push([s.id||"",s.side||"",s.mode||"",s.palletCount||"",s.durationMs?(s.durationMs/60000).toFixed(2):"",s.palletsPerHour?s.palletsPerHour.toFixed(2):"",s.palletsPerMin?s.palletsPerMin.toFixed(2):"",s.isTest?"YES":"NO",s.ts?new Date(s.ts).toISOString():""]);});
     }
     const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,"'")+'"').join(",")).join(String.fromCharCode(10));
     const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);
@@ -1435,7 +1578,6 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       <Btn variant="primary" small onClick={downloadCSV} style={{width:"auto",padding:"8px 16px",marginBottom:0}}>Export CSV</Btn>
     </div>
 
-    {/* ASK JONAH */}
     <div style={{background:"rgba(232,118,10,0.06)",border:"1px solid "+ORANGE,borderRadius:10,padding:"14px 16px",marginBottom:16}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div>
@@ -1612,7 +1754,7 @@ function SettingsTab({ settings, setSettings }) {
     <SLabel>Design Rates — Freezer (pallets/hr)</SLabel>
     {CONDITIONS.map(c=><div key={"fz_"+c}><label style={lbl}>{c}</label><input style={inp} type="number" placeholder="Not set — pending manufacturer data" value={settings["fz_rate_"+c]||""} onChange={e=>setSettings(p=>({...p,["fz_rate_"+c]:e.target.value}))}/></div>)}
     <Hr/>
-    <div style={{fontSize:11,color:FAINT,textAlign:"center"}}>TOC - Jonah Edition v5.0 · Local storage · Google Sheets sync enabled</div>
+    <div style={{fontSize:11,color:FAINT,textAlign:"center"}}>TOC - Jonah Edition v5.1 · Local storage · Google Sheets sync enabled</div>
     <div style={{height:24}}/>
   </div>;
 }
