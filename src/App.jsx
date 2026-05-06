@@ -1199,7 +1199,7 @@ function UnloadingTab({ settings }) {
             <div style={{fontSize:11,color:PURPLE,fontWeight:400,marginTop:4}}>{fmtTime(single.tagged)}</div>
             {single.floor&&<div style={{fontSize:11,color:PURPLE,fontWeight:400}}>+{fmt(single.tagged-single.floor)} from floor</div>}
           </>
-        : <><div>Tap — Tagged</div><div style={{fontSize:11,color:MUTED,fontWeight:400,marginTop:4}}>⬡ Goddess / Pallet Label</div></>
+        : "Tap — Tag"
       }
     </NodeBtn>
 
