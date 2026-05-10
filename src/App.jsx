@@ -485,11 +485,26 @@ function ObserverTab({ side, nodes, settings }) {
     } catch { return null; }
   });
 
-  const [pallet, setPallet] = useState(null);
-  const [lockedLane, setLockedLane] = useState(null);
-  const [lockedSC, setLockedSC] = useState(null);
-  const [craneNumber, setCraneNumber] = useState(null);
-  const [srmNumber, setSrmNumber] = useState(null);
+  // Persist in-progress pallet across tab switches
+  const palletKey = "active_pallet_"+side;
+  const [pallet, setPalletRaw] = useState(() => { try { const r=localStorage.getItem(palletKey); return r?JSON.parse(r):null; } catch { return null; } });
+  const setPallet = useCallback((v) => {
+    setPalletRaw(prev => {
+      const next = typeof v==="function" ? v(prev) : v;
+      try { if(next) localStorage.setItem(palletKey,JSON.stringify(next)); else localStorage.removeItem(palletKey); } catch {}
+      return next;
+    });
+  }, [palletKey]);
+
+  const [lockedLane, setLockedLane] = useState(() => { try { return JSON.parse(localStorage.getItem("locked_lane_"+side)||"null"); } catch { return null; } });
+  const [lockedSC, setLockedSC] = useState(() => { try { return JSON.parse(localStorage.getItem("locked_sc_"+side)||"null"); } catch { return null; } });
+  const [craneNumber, setCraneNumberRaw] = useState(() => { try { return JSON.parse(localStorage.getItem("crane_num_"+side)||"null"); } catch { return null; } });
+  const [srmNumber, setSrmNumberRaw] = useState(() => { try { return JSON.parse(localStorage.getItem("srm_num_"+side)||"null"); } catch { return null; } });
+
+  const setCraneNumber = (v) => { setCraneNumberRaw(v); try { if(v!=null) localStorage.setItem("crane_num_"+side,JSON.stringify(v)); else localStorage.removeItem("crane_num_"+side); } catch {} };
+  const setSrmNumber = (v) => { setSrmNumberRaw(v); try { if(v!=null) localStorage.setItem("srm_num_"+side,JSON.stringify(v)); else localStorage.removeItem("srm_num_"+side); } catch {} };
+  useEffect(() => { try { if(lockedLane!=null) localStorage.setItem("locked_lane_"+side,JSON.stringify(lockedLane)); else localStorage.removeItem("locked_lane_"+side); } catch {} }, [lockedLane, side]);
+  useEffect(() => { try { if(lockedSC!=null) localStorage.setItem("locked_sc_"+side,JSON.stringify(lockedSC)); else localStorage.removeItem("locked_sc_"+side); } catch {} }, [lockedSC, side]);
   const [confirm, setConfirm] = useState(null);
   const [coldFlag, setColdFlag] = useState(null);
   const [slowFlag, setSlowFlag] = useState(null);
@@ -679,6 +694,7 @@ function ObserverTab({ side, nodes, settings }) {
     setActiveSession(s);
     saveSessionState(s);
     setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); setCraneNumber(null);
+    try { localStorage.removeItem("active_pallet_"+side); localStorage.removeItem("locked_lane_"+side); localStorage.removeItem("locked_sc_"+side); localStorage.removeItem("crane_num_"+side); localStorage.removeItem("srm_num_"+side); } catch {}
   };
 
   const completePallet = (cleanRun=false) => {
@@ -694,6 +710,7 @@ function ObserverTab({ side, nodes, settings }) {
     const s = {...activeSession,endTime:Date.now()};
     saveSessionState(s);
     setActiveSession(null); setPallet(null); setLockedLane(null); setLockedSC(null); setView("setup");
+    try { localStorage.removeItem("active_pallet_"+side); localStorage.removeItem("locked_lane_"+side); localStorage.removeItem("locked_sc_"+side); localStorage.removeItem("crane_num_"+side); localStorage.removeItem("srm_num_"+side); } catch {}
   };
 
   if (view==="setup") return <div>
@@ -878,7 +895,7 @@ function ObserverTab({ side, nodes, settings }) {
           <Btn variant="success" onClick={() => completePallet(false)} style={{marginBottom:0}}>Complete</Btn>
           <Btn variant="success" onClick={() => completePallet(true)} style={{marginBottom:0,background:"transparent",border:"2px solid "+GREEN,color:GREEN}}>✓ Clean Run</Btn>
         </div>
-        <Btn variant="ghost" small onClick={() => { setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); setCraneNumber(null); setErrors([]); setErrorActive(false); setErrorStart(null); }}>Cancel / Discard</Btn>
+        <Btn variant="ghost" small onClick={() => { setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); setCraneNumber(null); setErrors([]); setErrorActive(false); setErrorStart(null); try { localStorage.removeItem("active_pallet_"+side); localStorage.removeItem("locked_lane_"+side); localStorage.removeItem("locked_sc_"+side); localStorage.removeItem("crane_num_"+side); localStorage.removeItem("srm_num_"+side); } catch {} }}>Cancel / Discard</Btn>
       </div>
     </>}
     <div style={{height:24}}/>
@@ -1194,16 +1211,27 @@ function UnloadingTab({ settings }) {
       crewGaps,totalGapTime,truckMoves:truckMoves||[],isTest:false
     }]);
     clearFDDActive();
-    setActive(BLANK);
+    setActive({...BLANK});
+  };
+
+  const discardSession = () => {
+    clearFDDActive();
+    setActive({...BLANK});
   };
 
   // ── Setup screen ──────────────────────────────────────
   if (!mode) return <div>
-    <SLabel mt={4}>Side</SLabel>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4,marginBottom:0}}>
+      <SLabel mt={4}>Side</SLabel>
+      {(meta.door||batchStart||single.floor)&&<button onClick={discardSession} style={{background:"rgba(224,82,82,0.15)",border:"1px solid rgba(224,82,82,0.4)",color:RED,fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit"}}>Discard &amp; Reset</button>}
+    </div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:4}}>
       {["FZ","DD"].map(s=><Btn key={s} small variant={meta.side===s?"active":"default"} onClick={()=>setMeta(p=>({...p,side:s}))}>{s==="FZ"?"Freezer":"Dairy / Deli"}</Btn>)}
     </div>
-    <SLabel>Door #</SLabel>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:0}}>
+      <SLabel mt={0}>Door #</SLabel>
+      {meta.door&&<button onClick={()=>setMeta(p=>({...p,door:""}))} style={{background:"transparent",border:"none",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit",padding:"0 4px"}}>Clear ✕</button>}
+    </div>
     <NumPad value={meta.door} onChange={d=>setMeta(p=>({...p,door:d}))} placeholder="Door #"/>
     <SLabel>People Unloading</SLabel>
     <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginBottom:4}}>
@@ -1253,9 +1281,7 @@ function UnloadingTab({ settings }) {
         <Chip label={meta.side+" · Door "+(meta.door||"?")+" · "+meta.people+"p"} color="faint"/>
       </div>
       <Btn variant="ghost" small onClick={()=>setMode(null)} style={{width:"auto",padding:"6px 12px",marginBottom:0}}>Back</Btn>
-    </div>
-
-    {/* Live elapsed timer */}
+      <Btn variant="danger" small onClick={discardSession} style={{width:"auto",padding:"6px 12px",marginBottom:0}}>Discard</Btn>
     {single.floor&&!single.induct&&<div style={{textAlign:"center",padding:"8px 0 16px"}}>
       <div style={{fontSize:11,color:MUTED,marginBottom:4}}>ELAPSED SINCE FLOOR</div>
       <div style={{fontSize:32,fontWeight:700,color:ORANGE2}}>{fmt(now-single.floor)}</div>
@@ -1372,6 +1398,7 @@ function UnloadingTab({ settings }) {
         <Chip label={meta.side+" · Door "+(meta.door||"?")+" · "+meta.people+"p"} color="faint"/>
       </div>
       <Btn variant="ghost" small onClick={()=>setMode(null)} style={{width:"auto",padding:"6px 12px",marginBottom:0}}>Back</Btn>
+      <Btn variant="danger" small onClick={discardSession} style={{width:"auto",padding:"6px 12px",marginBottom:0}}>Discard</Btn>
     </div>
 
     {batchStart&&<ManHourCard people={meta.people} elapsedMs={batchElapsed} palletCount={completedBatch.length} label="Live Metrics"/>}
@@ -2064,11 +2091,8 @@ function SettingsTab({ settings, setSettings }) {
 export default function App() {
   const [tab,setTab] = useState("dd");
   const [settings,setSettings] = useStorage("jonah_settings",{coldChainMins:30,userId:"",srm_sc5800:"15,16,17,14",srm_sc5700:"11,12,13,14",srm_sc2800:"6,7,8,9,10,5",srm_sc2700:"1,2,3,4,5"});
-
-  const [ddSessions] = useStorage("sessions_DD",[]);
-  const [fzSessions] = useStorage("sessions_FZ",[]);
-  const ddActive = ddSessions.length>0 && !ddSessions[ddSessions.length-1].endTime;
-  const fzActive = fzSessions.length>0 && !fzSessions[fzSessions.length-1].endTime;
+  const ddActive = !!((() => { try { return JSON.parse(localStorage.getItem("active_pallet_DD")||"null"); } catch { return null; } })());
+  const fzActive = !!((() => { try { return JSON.parse(localStorage.getItem("active_pallet_FZ")||"null"); } catch { return null; } })());
   const fddActive = !!(loadFDDActive()?.mode);
 
   const tabs = [
