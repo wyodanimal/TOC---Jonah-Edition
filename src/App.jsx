@@ -35,6 +35,7 @@ const DD_NODES = [
   { id: "dd_conformity", label: "DD Conformity", hasReject: true },
   { id: "vl_lane",       label: "VL",   isLaneSplit: true, options: [{ id: "vl4800", label: "VL 4800", lane: "A" }, { id: "vl4700", label: "VL 4700", lane: "B" }] },
   { id: "sc_lane",       label: "SC",   isLaneSplit: true, isSC: true, options: [{ id: "sc5800", label: "SC 5800", lane: "A" }, { id: "sc5700", label: "SC 5700", lane: "B" }] },
+  { id: "crane_pickup",  label: "Crane Pickup", isCranePickup: true },
   { id: "srm",           label: "SRM",  isSRM: true },
 ];
 
@@ -50,6 +51,7 @@ const FZ_NODES = [
   { id: "fz_conformity", label: "FZ Conformity", hasReject: true },
   { id: "vl_lane",       label: "VL",   isColdChainCheck: true, isLaneSplit: true, options: [{ id: "vl1800", label: "VL 1800", lane: "A" }, { id: "vl1700", label: "VL 1700", lane: "B" }] },
   { id: "sc_lane",       label: "SC",   isLaneSplit: true, isSC: true, options: [{ id: "sc2800", label: "SC 2800", lane: "A" }, { id: "sc2700", label: "SC 2700", lane: "B" }] },
+  { id: "crane_pickup",  label: "Crane Pickup", isCranePickup: true },
   { id: "srm",           label: "SRM",  isSRM: true },
 ];
 
@@ -64,7 +66,8 @@ const DD_SEGMENTS = [
   { key: "amtu->conformity", label: "AMTU → Conformity",  from: ["amtu4300","amtu4100"],                     to: ["dd_conformity"] },
   { key: "conformity->vl",   label: "Conformity → VL",    from: ["dd_conformity"],                           to: ["vl4800","vl4700"] },
   { key: "vl->sc",           label: "VL → SC",            from: ["vl4800","vl4700"],                         to: ["sc5800","sc5700"] },
-  { key: "sc->srm",          label: "SC → SRM",           from: ["sc5800","sc5700"],                         to: ["srm"] },
+  { key: "sc->crane",        label: "SC → Crane Pickup",  from: ["sc5800","sc5700"],                         to: ["crane_pickup"] },
+  { key: "crane->srm",       label: "Crane Pickup → SRM", from: ["crane_pickup"],                            to: ["srm"] },
 ];
 const FZ_SEGMENTS = [
   { key: "floor->sg",        label: "Floor → SG",        from: ["floor"],                                    to: ["sg1301","sg1311","sg1101","sg1111","sg1300","sg1100"] },
@@ -72,7 +75,8 @@ const FZ_SEGMENTS = [
   { key: "amtu->conformity", label: "AMTU → Conformity",  from: ["amtu1300","amtu1100"],                     to: ["fz_conformity"] },
   { key: "conformity->vl",   label: "Conformity → VL",    from: ["fz_conformity"],                           to: ["vl1800","vl1700"] },
   { key: "vl->sc",           label: "VL → SC",            from: ["vl1800","vl1700"],                         to: ["sc2800","sc2700"] },
-  { key: "sc->srm",          label: "SC → SRM",           from: ["sc2800","sc2700"],                         to: ["srm"] },
+  { key: "sc->crane",        label: "SC → Crane Pickup",  from: ["sc2800","sc2700"],                         to: ["crane_pickup"] },
+  { key: "crane->srm",       label: "Crane Pickup → SRM", from: ["crane_pickup"],                            to: ["srm"] },
 ];
 
 const NODE_SHORT = {
@@ -84,11 +88,16 @@ const NODE_SHORT = {
   dd_conformity:"CF", fz_conformity:"CF",
   vl4800:"VL48", vl4700:"VL47", vl1800:"VL18", vl1700:"VL17",
   sc5800:"SC58", sc5700:"SC57", sc2800:"SC28", sc2700:"SC27",
+  crane_pickup:"CR",
   srm:"SRM",
 };
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyL1gPRqiWdDpLyRY7eUXjHADAXyG7pOf3kFmnHZDyJDrnFZKPa6Pu7VTsMlrv25G7T/exec";
 const SESSION_RESUME_THRESHOLD = 2 * 60 * 60 * 1000;
+const FDD_ACTIVE_KEY = "fdd_active_session";
+function loadFDDActive() { try { const r = localStorage.getItem(FDD_ACTIVE_KEY); return r ? JSON.parse(r) : null; } catch { return null; } }
+function saveFDDActive(s) { try { localStorage.setItem(FDD_ACTIVE_KEY, JSON.stringify(s)); } catch {} }
+function clearFDDActive() { try { localStorage.removeItem(FDD_ACTIVE_KEY); } catch {} }
 
 // ── Colors ────────────────────────────────────────────────
 const BG      = "#1a1f2e";
@@ -364,6 +373,44 @@ function SRMPicker({ srms, onSelect, onCancel }) {
   </ModalWrap>;
 }
 
+function CranePicker({ cranes, onSelect, onCancel }) {
+  return <ModalWrap>
+    <div style={{background:SURFACE,border:"1px solid "+BLUE,borderRadius:14,padding:24,width:"100%",maxWidth:360}}>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:BLUE,marginBottom:6}}>Crane Pickup</div>
+      <div style={{fontSize:17,fontWeight:700,color:TEXT,marginBottom:6}}>Which crane?</div>
+      <div style={{fontSize:13,color:MUTED,marginBottom:20}}>Select the crane this pallet is going to.</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
+        {[...cranes].sort((a,b)=>a-b).map(n => <button key={n} onClick={() => onSelect(n)} style={{background:CARD,border:"2px solid "+BLUE,color:BLUE,borderRadius:8,padding:"16px 8px",fontSize:16,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>{n}</button>)}
+      </div>
+      <Btn variant="ghost" small onClick={onCancel}>Cancel</Btn>
+    </div>
+  </ModalWrap>;
+}
+
+function InductPicker({ side, onSelect }) {
+  const opts = {FZ:["SG 1301","SG 1311","SG 1101","SG 1111"],DD:["SG 4301","SG 4311","SG 4101","SG 4111"]};
+  return <ModalWrap>
+    <div style={{background:SURFACE,border:"1px solid "+GREEN,borderRadius:14,padding:24,width:"100%",maxWidth:360}}>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:GREEN,marginBottom:6}}>Induction Point</div>
+      <div style={{fontSize:17,fontWeight:700,color:TEXT,marginBottom:20}}>Which SG did it go to?</div>
+      {(opts[side]||[]).map(o => <Btn key={o} variant="success" onClick={() => onSelect(o)}>{o}</Btn>)}
+    </div>
+  </ModalWrap>;
+}
+
+function NumPad({ value, onChange, placeholder="" }) {
+  const digits = ["1","2","3","4","5","6","7","8","9","","0","⌫"];
+  return <div>
+    <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:8,padding:"12px 14px",fontSize:22,fontWeight:700,color:value?TEXT:MUTED,marginBottom:8,minHeight:52,letterSpacing:2}}>{value||placeholder}</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+      {digits.map((d,i) => d===""?<div key={i}/>:
+        <button key={i} onClick={() => { if(d==="⌫") onChange(value.slice(0,-1)); else if(value.length<6) onChange(value+d); }}
+          style={{background:CARD,border:"1px solid "+BORDER,color:TEXT,borderRadius:8,padding:"16px 8px",fontSize:20,fontWeight:700,fontFamily:"inherit",cursor:"pointer",textAlign:"center"}}>{d}</button>
+      )}
+    </div>
+  </div>;
+}
+
 function ColdFlagModal({ elapsed, onSave }) {
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
@@ -441,11 +488,13 @@ function ObserverTab({ side, nodes, settings }) {
   const [pallet, setPallet] = useState(null);
   const [lockedLane, setLockedLane] = useState(null);
   const [lockedSC, setLockedSC] = useState(null);
+  const [craneNumber, setCraneNumber] = useState(null);
   const [srmNumber, setSrmNumber] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [coldFlag, setColdFlag] = useState(null);
   const [slowFlag, setSlowFlag] = useState(null);
   const [srmPicker, setSrmPicker] = useState(false);
+  const [cranePicker, setCranePicker] = useState(false);
   const [pairingModal, setPairingModal] = useState(null);
   const [view, setView] = useState(activeSession ? "observer" : "setup");
   const [errors, setErrors] = useState([]);
@@ -461,7 +510,7 @@ function ObserverTab({ side, nodes, settings }) {
 
   const laneMap = side === "DD" ? DD_LANE_MAP : FZ_LANE_MAP;
 
-  const getSRMsForCurrentLane = () => {
+  const getCranesForCurrentLane = () => {
     if (!lockedSC) return side === "DD" ? [11,12,13,14,15,16,17] : [1,2,3,4,5,6,7,8,9,10];
     const settingsKey = "srm_" + lockedSC;
     if (settings[settingsKey]) {
@@ -560,10 +609,30 @@ function ObserverTab({ side, nodes, settings }) {
   };
 
   const tapNode = (key, isSRM) => {
-    if (isSRM) { setSrmPicker(true); return; }
+    if (key === "crane_pickup") {
+      if (!pallet) { setConfirm({type:"newPallet",key}); return; }
+      if (hasTap("crane_pickup")) { setConfirm({type:"restart"}); return; }
+      const ts = Date.now();
+      setPallet(p => ({...p, taps:{...p.taps, crane_pickup:ts}}));
+      setCranePicker(true); return;
+    }
+    if (isSRM) {
+      if (craneNumber) {
+        const ts = Date.now();
+        setSrmNumber(craneNumber);
+        setPallet(p => p ? {...p,taps:{...p.taps,srm:ts}} : {id:"PENDING",taps:{srm:ts},rejected:false,coldChainFlag:null,complete:false});
+      } else { setSrmPicker(true); }
+      return;
+    }
     if (!pallet) { setConfirm({type:"newPallet",key}); return; }
     if (hasTap(key)) { setConfirm({type:"restart"}); return; }
     doTap(key);
+  };
+
+  const handleCraneSelect = (num) => {
+    setCranePicker(false);
+    setCraneNumber(num);
+    setPallet(p => p ? {...p, craneNumber:num} : p);
   };
 
   const handleSRMSelect = (num) => {
@@ -583,7 +652,7 @@ function ObserverTab({ side, nodes, settings }) {
 
   const startPallet = (thenKey) => {
     const p = {id:"PENDING",taps:{},rejected:false,coldChainFlag:null,complete:false,errors:[],pairedTravel:null,cleanRun:false};
-    setLockedLane(null); setLockedSC(null); setSrmNumber(null);
+    setLockedLane(null); setLockedSC(null); setSrmNumber(null); setCraneNumber(null);
     setErrors([]); setErrorActive(false); setErrorStart(null);
     if (thenKey) {
       const nodeLane = laneMap[thenKey];
@@ -609,10 +678,16 @@ function ObserverTab({ side, nodes, settings }) {
     const s = {...activeSession,pallets:[...(activeSession.pallets||[]),final]};
     setActiveSession(s);
     saveSessionState(s);
-    setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null);
+    setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); setCraneNumber(null);
   };
 
-  const completePallet = (cleanRun=false) => savePallet({...pallet,complete:true,cleanRun,endTime:Date.now()},srmNumber);
+  const completePallet = (cleanRun=false) => {
+    if (hasTap("crane_pickup") && !hasTap("srm") && craneNumber) {
+      savePallet({...pallet,complete:true,cleanRun,endTime:Date.now()}, craneNumber);
+    } else {
+      savePallet({...pallet,complete:true,cleanRun,endTime:Date.now()}, srmNumber);
+    }
+  };
   const rejectPallet   = () => savePallet({...pallet,rejected:true,complete:true,endTime:Date.now()},srmNumber);
 
   const endSession = () => {
@@ -656,7 +731,8 @@ function ObserverTab({ side, nodes, settings }) {
         setSlowFlag(null);
       }}
       onNo={() => setSlowFlag(null)}/>}
-    {srmPicker&&<SRMPicker srms={getSRMsForCurrentLane()} onSelect={handleSRMSelect} onCancel={() => setSrmPicker(false)}/>}
+    {srmPicker&&<SRMPicker srms={getCranesForCurrentLane()} onSelect={handleSRMSelect} onCancel={() => setSrmPicker(false)}/>}
+    {cranePicker&&<CranePicker cranes={getCranesForCurrentLane()} onSelect={handleCraneSelect} onCancel={() => setCranePicker(false)}/>}
     {pairingModal&&<PairingModal scLabel={pairingModal.scLabel} onSelect={handlePairingSelect}/>}
 
     <div style={{background:SURFACE,borderRadius:10,padding:"12px 16px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -679,6 +755,7 @@ function ObserverTab({ side, nodes, settings }) {
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           <Chip label={pallet.id==="PENDING"?(side==="FZ"?"F":"D")+" · In Progress":pallet.id} color="orange"/>
           {srmNumber&&<Chip label={"SRM "+srmNumber} color="blue"/>}
+          {craneNumber&&<Chip label={"Crane "+craneNumber} color="blue"/>}
           {pallet.coldChainFlag&&<Chip label="Cold Flag" color="red"/>}
           {pallet.pairedTravel&&<Chip label={pallet.pairedTravel} color={pallet.pairedTravel==="Paired"?"green":"faint"}/>}
           {errors.length>0&&<Chip label={errors.length+" error"+(errors.length>1?"s":"")} color="red"/>}
@@ -712,13 +789,28 @@ function ObserverTab({ side, nodes, settings }) {
       {nodes.map((node,idx) => {
         const arrow = idx>0&&<div style={{textAlign:"center",color:FAINT,fontSize:13,margin:"-2px 0 4px"}}>↓</div>;
 
+        if (node.isCranePickup) {
+          const craneTapped = hasTap("crane_pickup");
+          const isNext = !craneTapped&&(()=>{const prev=nodes[idx-1];if(!prev)return true;if(prev.isLaneSplit)return prev.options.some(o=>hasTap(o.id));return hasTap(prev.id);})();
+          return <div key={node.id}>
+            {arrow}
+            <NodeBtn state={craneTapped?"tapped":isNext?"current":"default"} onClick={() => tapNode("crane_pickup",false)}>
+              <div>{craneTapped?"Crane "+craneNumber+" Pickup ✓":"Crane Pickup"}</div>
+              {craneTapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps.crane_pickup)}</div>}
+              {craneTapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr("crane_pickup")}</div>}
+              {!craneTapped&&isNext&&<div style={{fontSize:11,color:MUTED,fontWeight:400,marginTop:4}}>Tap → select crane</div>}
+            </NodeBtn>
+          </div>;
+        }
+
         if (node.isSRM) {
           const srmTapped = hasTap("srm");
-          const isNext = !srmTapped&&(()=>{const prev=nodes[idx-1];if(!prev)return true;if(prev.isLaneSplit)return prev.options.some(o=>hasTap(o.id));return hasTap(prev.id);})();
+          const isNext = !srmTapped&&(()=>{const prev=nodes[idx-1];if(!prev)return true;if(prev.isCranePickup)return hasTap("crane_pickup");if(prev.isLaneSplit)return prev.options.some(o=>hasTap(o.id));return hasTap(prev.id);})();
+          const srmLabel = srmTapped ? "SRM "+(srmNumber||craneNumber)+" ✓" : craneNumber ? "SRM (Crane "+craneNumber+")" : "SRM";
           return <div key={node.id}>
             {arrow}
             <NodeBtn state={srmTapped?"tapped":isNext?"current":"default"} onClick={() => tapNode("srm",true)}>
-              <div>{srmTapped?"SRM "+srmNumber+" ✓":"SRM"}</div>
+              <div>{srmLabel}</div>
               {srmTapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps.srm)}</div>}
               {srmTapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr("srm")}</div>}
             </NodeBtn>
@@ -786,7 +878,7 @@ function ObserverTab({ side, nodes, settings }) {
           <Btn variant="success" onClick={() => completePallet(false)} style={{marginBottom:0}}>Complete</Btn>
           <Btn variant="success" onClick={() => completePallet(true)} style={{marginBottom:0,background:"transparent",border:"2px solid "+GREEN,color:GREEN}}>✓ Clean Run</Btn>
         </div>
-        <Btn variant="ghost" small onClick={() => { setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); setErrors([]); setErrorActive(false); setErrorStart(null); }}>Cancel / Discard</Btn>
+        <Btn variant="ghost" small onClick={() => { setPallet(null); setLockedLane(null); setLockedSC(null); setSrmNumber(null); setCraneNumber(null); setErrors([]); setErrorActive(false); setErrorStart(null); }}>Cancel / Discard</Btn>
       </div>
     </>}
     <div style={{height:24}}/>
@@ -1052,29 +1144,36 @@ function SegSplit({ fromTs, toTs, label, color }) {
 // ── FDD Receiving Tab ─────────────────────────────────────
 function UnloadingTab({ settings }) {
   const [sessions,setSessions] = useStorage("dock_sessions",[]);
-  const [mode,setMode] = useState(null);
-  const [meta,setMeta] = useState({side:"FZ",door:"",people:"2",induct:"SG 1301",desc:""});
-
-  // Single mode: floor, tagged, induct timestamps
-  const [single,setSingle] = useState({floor:null,tagged:null,induct:null});
-
-  // Batch mode: each pallet has floorTs, taggedTs, inductTs
-  const [batch,setBatch] = useState(Array(5).fill(null).map((_,i)=>({id:i+1,floorTs:null,taggedTs:null,inductTs:null})));
-
-  const [batchStart,setBatchStart] = useState(null);
+  const BLANK = {mode:null,meta:{side:"FZ",door:"",people:"2",desc:""},single:{floor:null,tagged:null,induct:null,inductPoint:null},batch:Array(5).fill(null).map((_,i)=>({id:i+1,floorTs:null,taggedTs:null,inductTs:null,inductPoint:null})),batchStart:null,crewGaps:[],gapActive:false,gapStart:null,truckMoves:[]};
+  const [active, setActiveRaw] = useState(() => loadFDDActive() || BLANK);
+  const setActive = (upd) => { setActiveRaw(prev => { const next = typeof upd==="function"?upd(prev):upd; saveFDDActive(next); return next; }); };
+  const {mode,meta,single,batch,batchStart,crewGaps,gapActive,gapStart,truckMoves} = active;
+  const setMode = (m) => setActive(p=>({...p,mode:m}));
+  const setMeta = (fn) => setActive(p=>({...p,meta:typeof fn==="function"?fn(p.meta):fn}));
+  const setSingle = (fn) => setActive(p=>({...p,single:typeof fn==="function"?fn(p.single):fn}));
+  const setBatch = (fn) => setActive(p=>({...p,batch:typeof fn==="function"?fn(p.batch):fn}));
   const [now,setNow] = useState(Date.now());
-  const [crewGaps,setCrewGaps] = useState([]);
-  const [gapActive,setGapActive] = useState(false);
-  const [gapStart,setGapStart] = useState(null);
+  const [showInductPicker, setShowInductPicker] = useState(false);
+  const [showInductPickerIdx, setShowInductPickerIdx] = useState(null);
+  const [showTruckMove, setShowTruckMove] = useState(false);
+  const [truckDoor, setTruckDoor] = useState("");
+  const [truckMoveStart, setTruckMoveStart] = useState(null);
   useEffect(()=>{const i=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(i);},[]);
 
-  const startGap = () => { setGapActive(true); setGapStart(Date.now()); };
-  const stopGap  = () => {
+  const startGap = () => setActive(p=>({...p,gapActive:true,gapStart:Date.now()}));
+  const stopGap = () => {
     if (!gapStart) return;
-    setCrewGaps(prev => [...prev, {start:gapStart,end:Date.now(),duration:Date.now()-gapStart}]);
-    setGapActive(false); setGapStart(null);
+    const g = {start:gapStart,end:Date.now(),duration:Date.now()-gapStart};
+    setActive(p=>({...p,crewGaps:[...p.crewGaps,g],gapActive:false,gapStart:null}));
   };
   const totalGapTime = crewGaps.reduce((a,g)=>a+g.duration,0);
+  const startTruckMove = () => { setTruckDoor(""); setTruckMoveStart(Date.now()); setShowTruckMove(true); };
+  const saveTruckMove = () => {
+    if (!truckMoveStart) return;
+    const m = {door:truckDoor,start:truckMoveStart,end:Date.now(),duration:Date.now()-truckMoveStart};
+    setActive(p=>({...p,truckMoves:[...p.truckMoves,m]}));
+    setShowTruckMove(false);
+  };
 
   const INDUCT = {FZ:["SG 1301","SG 1311","SG 1101","SG 1111"],DD:["SG 4301","SG 4311","SG 4101","SG 4111"]};
   const completedBatch = batch.filter(p=>p.floorTs&&p.inductTs);
@@ -1092,28 +1191,24 @@ function UnloadingTab({ settings }) {
       ts:Date.now(),meta,mode,
       data:mode==="single"?single:batch.filter(p=>p.floorTs||p.taggedTs||p.inductTs),
       sessionElapsed,palletCount,manHrsTotal,manHrsPerPallet,
-      crewGaps,totalGapTime:crewGaps.reduce((a,g)=>a+g.duration,0),isTest:false
+      crewGaps,totalGapTime,truckMoves:truckMoves||[],isTest:false
     }]);
-    setMode(null); setSingle({floor:null,tagged:null,induct:null});
-    setBatch(Array(5).fill(null).map((_,i)=>({id:i+1,floorTs:null,taggedTs:null,inductTs:null})));
-    setBatchStart(null); setMeta({side:"FZ",door:"",people:"2",induct:"SG 1301",desc:""});
-    setCrewGaps([]); setGapActive(false); setGapStart(null);
+    clearFDDActive();
+    setActive(BLANK);
   };
 
   // ── Setup screen ──────────────────────────────────────
   if (!mode) return <div>
     <SLabel mt={4}>Side</SLabel>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:4}}>
-      {["FZ","DD"].map(s=><Btn key={s} small variant={meta.side===s?"active":"default"} onClick={()=>setMeta(p=>({...p,side:s,induct:INDUCT[s][0]}))}>{s==="FZ"?"Freezer":"Dairy / Deli"}</Btn>)}
+      {["FZ","DD"].map(s=><Btn key={s} small variant={meta.side===s?"active":"default"} onClick={()=>setMeta(p=>({...p,side:s}))}>{s==="FZ"?"Freezer":"Dairy / Deli"}</Btn>)}
     </div>
     <SLabel>Door #</SLabel>
-    <input style={inp} type="text" placeholder="Door number..." value={meta.door} onChange={e=>setMeta(p=>({...p,door:e.target.value}))}/>
+    <NumPad value={meta.door} onChange={d=>setMeta(p=>({...p,door:d}))} placeholder="Door #"/>
     <SLabel>People Unloading</SLabel>
     <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginBottom:4}}>
       {["1","2","3","4","5"].map(n=><Btn key={n} small variant={meta.people===n?"active":"default"} onClick={()=>setMeta(p=>({...p,people:n}))} style={{marginBottom:0,padding:"12px 4px"}}>{n}</Btn>)}
     </div>
-    <SLabel>Induction Point</SLabel>
-    {(INDUCT[meta.side]||[]).map(o=><Btn key={o} small variant={meta.induct===o?"active":"default"} onClick={()=>setMeta(p=>({...p,induct:o}))}>{o}</Btn>)}
     <Hr/>
     <Btn variant="primary" onClick={()=>setMode("single")}>Single Pallet</Btn>
     <Btn variant="outline" onClick={()=>setMode("batch")}>Batch Mode — up to 5</Btn>
@@ -1151,6 +1246,7 @@ function UnloadingTab({ settings }) {
 
   // ── Single pallet mode ────────────────────────────────
   if (mode==="single") return <div>
+    {showInductPicker&&<InductPicker side={meta.side} onSelect={pt=>{setSingle(p=>({...p,induct:Date.now(),inductPoint:pt}));setShowInductPicker(false);}}/>}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
       <div style={{display:"flex",gap:6}}>
         <Chip label="Single" color="orange"/>
@@ -1209,10 +1305,11 @@ function UnloadingTab({ settings }) {
     <NodeBtn
       state={single.induct?"tapped":single.floor?"current":"default"}
       disabled={!single.floor}
-      onClick={()=>single.floor&&setSingle(p=>({...p,induct:p.induct||Date.now()}))}
+      onClick={()=>single.floor&&!single.induct&&setShowInductPicker(true)}
     >
       {single.induct
-        ? <><div>Induct ✓</div><div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(single.induct)}</div>
+        ? <><div>Induct ✓{single.inductPoint&&<span style={{fontSize:11,fontWeight:400,color:GREEN}}> — {single.inductPoint}</span>}</div>
+            <div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(single.induct)}</div>
             {single.floor&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>+{fmt(single.induct-single.floor)} total</div>}
           </>
         : "Tap — Induction"
@@ -1245,10 +1342,30 @@ function UnloadingTab({ settings }) {
       <span>Gap {i+1} — {new Date(g.start).toLocaleTimeString()}</span>
       <span style={{color:RED,fontWeight:700}}>{fmt(g.duration)}</span>
     </div>)}
+    <Hr/>
+    <SLabel>Crew to Another Truck</SLabel>
+    {showTruckMove
+      ? <div style={{background:"rgba(155,109,255,0.1)",border:"2px solid "+PURPLE,borderRadius:8,padding:"12px 14px",marginBottom:8}}>
+          <div style={{fontSize:11,fontWeight:700,color:PURPLE,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Which door?</div>
+          <NumPad value={truckDoor} onChange={setTruckDoor} placeholder="Door #"/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:10}}>
+            <Btn variant="purpleSolid" small onClick={saveTruckMove} style={{marginBottom:0}}>Save Move</Btn>
+            <Btn variant="ghost" small onClick={()=>setShowTruckMove(false)} style={{marginBottom:0}}>Cancel</Btn>
+          </div>
+        </div>
+      : <button onClick={startTruckMove} style={{display:"block",width:"100%",background:"transparent",border:"1px solid "+PURPLE,color:PURPLE,borderRadius:8,padding:"10px 12px",fontSize:12,fontWeight:700,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:8}}>
+          + Crew to Another Truck {(truckMoves||[]).length>0&&"("+truckMoves.length+" logged)"}
+        </button>
+    }
+    {(truckMoves||[]).map((m,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:MUTED,padding:"4px 0",borderBottom:"1px solid "+BORDER}}>
+      <span>Move {i+1}{m.door?" → Door "+m.door:""} — {new Date(m.start).toLocaleTimeString()}</span>
+      <span style={{color:PURPLE,fontWeight:700}}>{fmt(m.duration)}</span>
+    </div>)}
   </div>;
 
   // ── Batch mode ────────────────────────────────────────
   return <div>
+    {showInductPickerIdx!==null&&<InductPicker side={meta.side} onSelect={pt=>{setBatch(prev=>{const n=[...prev];n[showInductPickerIdx]={...n[showInductPickerIdx],inductTs:n[showInductPickerIdx].inductTs||Date.now(),inductPoint:pt};return n;});setShowInductPickerIdx(null);}}/>}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
       <div style={{display:"flex",gap:6}}>
         <Chip label="Batch" color="orange"/>
@@ -1288,8 +1405,8 @@ function UnloadingTab({ settings }) {
 
         {/* Induct */}
         <Btn small variant={p.inductTs?"success":p.floorTs?"primary":"ghost"} disabled={!p.floorTs} style={{marginBottom:0}}
-          onClick={()=>p.floorTs&&setBatch(prev=>{const n=[...prev];n[i]={...n[i],inductTs:n[i].inductTs||Date.now()};return n;})}>
-          {p.inductTs?"Induct ✓":"Induct"}
+          onClick={()=>p.floorTs&&!p.inductTs&&setShowInductPickerIdx(i)}>
+          {p.inductTs?"Induct ✓"+(p.inductPoint?" ("+p.inductPoint.replace("SG ","SG")+")":""):"Induct"}
         </Btn>
       </div>
 
@@ -1324,6 +1441,25 @@ function UnloadingTab({ settings }) {
       <span style={{color:RED,fontWeight:700}}>{fmt(g.duration)}</span>
     </div>)}
 
+    <Hr/>
+    <SLabel>Crew to Another Truck</SLabel>
+    {showTruckMove
+      ? <div style={{background:"rgba(155,109,255,0.1)",border:"2px solid "+PURPLE,borderRadius:8,padding:"12px 14px",marginBottom:8}}>
+          <div style={{fontSize:11,fontWeight:700,color:PURPLE,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Which door?</div>
+          <NumPad value={truckDoor} onChange={setTruckDoor} placeholder="Door #"/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:10}}>
+            <Btn variant="purpleSolid" small onClick={saveTruckMove} style={{marginBottom:0}}>Save Move</Btn>
+            <Btn variant="ghost" small onClick={()=>setShowTruckMove(false)} style={{marginBottom:0}}>Cancel</Btn>
+          </div>
+        </div>
+      : <button onClick={startTruckMove} style={{display:"block",width:"100%",background:"transparent",border:"1px solid "+PURPLE,color:PURPLE,borderRadius:8,padding:"10px 12px",fontSize:12,fontWeight:700,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:8}}>
+          + Crew to Another Truck {(truckMoves||[]).length>0&&"("+truckMoves.length+" logged)"}
+        </button>
+    }
+    {(truckMoves||[]).map((m,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:MUTED,padding:"4px 0",borderBottom:"1px solid "+BORDER}}>
+      <span>Move {i+1}{m.door?" → Door "+m.door:""} — {new Date(m.start).toLocaleTimeString()}</span>
+      <span style={{color:PURPLE,fontWeight:700}}>{fmt(m.duration)}</span>
+    </div>)}
     <Hr/>
     <SLabel>Load Description</SLabel>
     <textarea rows={2} placeholder="Enter after unloading..." value={meta.desc} onChange={e=>setMeta(p=>({...p,desc:e.target.value}))} style={ta}/>
@@ -1827,6 +1963,47 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
       </div>
       <div style={{fontSize:11,color:MUTED,marginTop:3}}>across {mhpp.length} sessions</div>
     </Card>}
+
+    {(()=>{
+      const realDock = dockSessions.filter(s=>!s.isTest);
+      const singles = realDock.filter(s=>s.mode==="single"&&s.data);
+      const f2t = singles.map(s=>s.data.tagged&&s.data.floor?s.data.tagged-s.data.floor:null).filter(Boolean);
+      const t2i = singles.map(s=>s.data.induct&&s.data.tagged?s.data.induct-s.data.tagged:null).filter(Boolean);
+      const f2i = singles.map(s=>s.data.induct&&s.data.floor?s.data.induct-s.data.floor:null).filter(Boolean);
+      const allGaps = realDock.flatMap(s=>s.crewGaps||[]);
+      const allMoves = realDock.flatMap(s=>s.truckMoves||[]);
+      const sessWithMoves = realDock.filter(s=>(s.truckMoves||[]).length>0).length;
+      const doorFreq = {};allMoves.forEach(m=>{if(m.door)doorFreq[m.door]=(doorFreq[m.door]||0)+1;});
+      const topDoors = Object.entries(doorFreq).sort((a,b)=>b[1]-a[1]).slice(0,5);
+      if(!f2i.length&&!allGaps.length&&!allMoves.length) return null;
+      return <>
+        {f2i.length>0&&<><Hr/><SLabel>FDD Dwell Times (single pallets)</SLabel>
+          <StatPair
+            left={{label:"Floor → Tag Avg",value:f2t.length?fmt(avg(f2t)):"--",color:PURPLE,sub:f2t.length+" obs"}}
+            right={{label:"Tag → Induct Avg",value:t2i.length?fmt(avg(t2i)):"--",color:BLUE,sub:t2i.length+" obs"}}
+          />
+          <StatPair
+            left={{label:"Floor → Induct Avg",value:fmt(avg(f2i)),color:GREEN,sub:"min "+fmt(Math.min(...f2i))}}
+            right={{label:"Floor → Induct Max",value:fmt(Math.max(...f2i)),color:RED,sub:f2i.length+" obs"}}
+          />
+        </>}
+        {allGaps.length>0&&<><Hr/><SLabel>FDD Crew Gaps</SLabel>
+          <StatPair
+            left={{label:"Total Gaps",value:allGaps.length,color:RED,sub:"across "+realDock.length+" sessions"}}
+            right={{label:"Avg Gap",value:fmt(avg(allGaps.map(g=>g.duration))),color:RED,sub:"max "+fmt(Math.max(...allGaps.map(g=>g.duration)))}}
+          />
+          <div style={{fontSize:12,color:MUTED,marginBottom:8}}>Total time lost: <span style={{color:RED,fontWeight:700}}>{fmt(allGaps.reduce((a,g)=>a+g.duration,0))}</span></div>
+        </>}
+        {allMoves.length>0&&<><Hr/><SLabel>FDD Truck Reassignments</SLabel>
+          <StatPair
+            left={{label:"Total Moves",value:allMoves.length,color:PURPLE,sub:sessWithMoves+" of "+realDock.length+" sessions"}}
+            right={{label:"Avg Time Away",value:fmt(avg(allMoves.map(m=>m.duration))),color:PURPLE,sub:"max "+fmt(Math.max(...allMoves.map(m=>m.duration)))}}
+          />
+          {topDoors.length>0&&<div style={{marginBottom:8}}>{topDoors.map(([door,count])=><div key={door} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:TEXT,padding:"4px 0",borderBottom:"1px solid "+BORDER}}><span>Door {door}</span><span style={{color:PURPLE,fontWeight:700}}>{count} move{count!==1?"s":""}</span></div>)}</div>}
+          <div style={{fontSize:12,color:MUTED,marginBottom:8}}>Total time lost: <span style={{color:PURPLE,fontWeight:700}}>{fmt(allMoves.reduce((a,m)=>a+m.duration,0))}</span></div>
+        </>}
+      </>;
+    })()}
     <div style={{height:24}}/>
   </div>;
 }
@@ -1888,10 +2065,16 @@ export default function App() {
   const [tab,setTab] = useState("dd");
   const [settings,setSettings] = useStorage("jonah_settings",{coldChainMins:30,userId:"",srm_sc5800:"15,16,17,14",srm_sc5700:"11,12,13,14",srm_sc2800:"6,7,8,9,10,5",srm_sc2700:"1,2,3,4,5"});
 
+  const [ddSessions] = useStorage("sessions_DD",[]);
+  const [fzSessions] = useStorage("sessions_FZ",[]);
+  const ddActive = ddSessions.length>0 && !ddSessions[ddSessions.length-1].endTime;
+  const fzActive = fzSessions.length>0 && !fzSessions[fzSessions.length-1].endTime;
+  const fddActive = !!(loadFDDActive()?.mode);
+
   const tabs = [
-    {id:"dd",        label:"D/D"},
-    {id:"fz",        label:"FZ"},
-    {id:"unload",    label:<div style={{fontSize:10,lineHeight:1.2}}><div>FDD</div><div>REC</div></div>},
+    {id:"dd",        label:"D/D", dot:ddActive},
+    {id:"fz",        label:"FZ",  dot:fzActive},
+    {id:"unload",    label:<div style={{fontSize:10,lineHeight:1.2}}><div>FDD</div><div>REC</div></div>, dot:fddActive},
     {id:"conformity",label:<div style={{fontSize:10,lineHeight:1.2}}><div>CONF</div><div>CTC</div></div>},
     {id:"history",   label:"Log"},
     {id:"summary",   label:"Sum"},
@@ -1912,7 +2095,10 @@ export default function App() {
       {settings.userId&&<Chip label={settings.userId} color="orange"/>}
     </div>
     <div style={{display:"flex",background:SURFACE,borderBottom:"1px solid "+BORDER}}>
-      {tabs.map(t=><div key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:"10px 2px",textAlign:"center",fontSize:11,fontWeight:700,letterSpacing:0.3,textTransform:"uppercase",color:tab===t.id?ORANGE:MUTED,cursor:"pointer",borderBottom:tab===t.id?"2px solid "+ORANGE:"2px solid transparent"}}>{t.label}</div>)}
+      {tabs.map(t=><div key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:"10px 2px",textAlign:"center",fontSize:11,fontWeight:700,letterSpacing:0.3,textTransform:"uppercase",color:tab===t.id?ORANGE:MUTED,cursor:"pointer",borderBottom:tab===t.id?"2px solid "+ORANGE:"2px solid transparent",position:"relative"}}>
+        {t.label}
+        {t.dot&&<div style={{position:"absolute",top:6,right:"calc(50% - 12px)",width:7,height:7,borderRadius:"50%",background:GREEN,border:"1px solid "+BG}}/>}
+      </div>)}
     </div>
     <div style={{flex:1,overflowY:"auto",padding:"4px 18px 0"}}>
       {tab==="dd"         &&<ObserverTab side="DD" nodes={DD_NODES} settings={settings}/>}
