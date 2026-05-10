@@ -1282,6 +1282,8 @@ function UnloadingTab({ settings }) {
       </div>
       <Btn variant="ghost" small onClick={()=>setMode(null)} style={{width:"auto",padding:"6px 12px",marginBottom:0}}>Back</Btn>
       <Btn variant="danger" small onClick={discardSession} style={{width:"auto",padding:"6px 12px",marginBottom:0}}>Discard</Btn>
+    </div>
+
     {single.floor&&!single.induct&&<div style={{textAlign:"center",padding:"8px 0 16px"}}>
       <div style={{fontSize:11,color:MUTED,marginBottom:4}}>ELAPSED SINCE FLOOR</div>
       <div style={{fontSize:32,fontWeight:700,color:ORANGE2}}>{fmt(now-single.floor)}</div>
