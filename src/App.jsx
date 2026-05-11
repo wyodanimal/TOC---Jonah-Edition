@@ -637,18 +637,6 @@ function ObserverTab({ side, nodes, settings }) {
     return nodeIdx < maxTapped;
   };
 
-  const isLockedBySequence = (nodeId) => {
-    if (!pallet || !Object.keys(pallet.taps).length) return false;
-    const ORDER = side === "DD"
-      ? ["floor","sg4301","sg4311","sg4101","sg4111","sg4300","sg4100","amtu4300","amtu4100","dd_conformity","vl4800","vl4700","sc5800","sc5700","crane_pickup","srm"]
-      : ["floor","sg1301","sg1311","sg1101","sg1111","sg1300","sg1100","amtu1300","amtu1100","fz_conformity","vl1800","vl1700","sc2800","sc2700","crane_pickup","srm"];
-    const nodeIdx = ORDER.indexOf(nodeId);
-    if (nodeIdx === -1) return false;
-    const tappedIndices = Object.keys(pallet.taps).map(k => ORDER.indexOf(k)).filter(i => i !== -1);
-    if (!tappedIndices.length) return false;
-    return nodeIdx < Math.max(...tappedIndices);
-  };
-
   const isLaneLocked = (optId) => {
     if (optId.startsWith("amtu")) {
       const sgTapped = pallet && Object.keys(pallet.taps).find(k => k.startsWith("sg"));
