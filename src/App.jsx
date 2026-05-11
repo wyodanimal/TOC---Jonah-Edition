@@ -202,18 +202,77 @@ async function syncToSheets(ddSessions, fzSessions, dockSessions) {
       fmtTs("sc5800"),fmtTs("sc5700"),fmtTs("sc2800"),fmtTs("sc2700"),fmtTs("srm"),
       ...segTimes, offlineList];
   });
-  const dockRows = dockSessions.map(s => [
-    s.id||"",s.meta?.side||"",s.meta?.door||"",s.meta?.people||"",s.mode||"",s.palletCount||"",
-    s.sessionElapsed?(s.sessionElapsed/60000).toFixed(2):"",
-    s.manHrsTotal?s.manHrsTotal.toFixed(3):"",
-    s.manHrsPerPallet?s.manHrsPerPallet.toFixed(3):"",
-    s.meta?.desc||"",s.ts?new Date(s.ts).toISOString():"",
-  ]);
+  // FDD dock rows now expanded to one row per pallet
+  const dockRows = buildFDDRows(dockSessions);
   const results = await Promise.all([
     fetch(APPS_SCRIPT_URL,{method:"POST",body:JSON.stringify({type:"pallets",rows:palletRows})}),
     fetch(APPS_SCRIPT_URL,{method:"POST",body:JSON.stringify({type:"dock",rows:dockRows})}),
   ]);
   return results.every(r => r.ok);
+}
+
+// ── Build one FDD row per pallet (used by both CSV export and Sheets sync) ──
+function buildFDDRows(dockSessions) {
+  const rows = [];
+  dockSessions.forEach(s => {
+    const hasColdChain = s.meta?.side === "FZ";
+    const crewGapYN = (s.crewGaps||[]).length > 0 ? "YES" : "NO";
+    const crewGapTotal = (s.crewGaps||[]).reduce((a,g)=>a+g.duration,0);
+    const truckMoves = s.truckMoves||[];
+    const truckMoveYN = truckMoves.length > 0 ? "YES" : "NO";
+    const truckMoveDoors = truckMoves.map(m=>m.door||"?").join(";");
+    const truckMoveTotal = truckMoves.reduce((a,m)=>a+m.duration,0);
+
+    if (s.mode === "single" || !s.mode) {
+      // Single pallet — one row
+      const d = s.data || {};
+      const floorTs  = d.floor  ? new Date(d.floor).toISOString()  : "";
+      const taggedTs = d.tagged ? new Date(d.tagged).toISOString() : "";
+      const inductTs = d.induct ? new Date(d.induct).toISOString() : "";
+      const f2t = d.floor && d.tagged ? ((d.tagged - d.floor)/60000).toFixed(3) : "";
+      const t2i = d.tagged && d.induct ? ((d.induct - d.tagged)/60000).toFixed(3) : "";
+      const f2i = d.floor && d.induct ? ((d.induct - d.floor)/60000).toFixed(3) : "";
+      const coldFlag = hasColdChain && d.floor && d.induct && (d.induct - d.floor) > 30*60*1000 ? "YES" : "NO";
+      rows.push([
+        s.id||"", s.meta?.side||"", s.meta?.door||"", s.meta?.people||"",
+        1,
+        floorTs, taggedTs, inductTs, d.inductPoint||"",
+        f2t, t2i, f2i,
+        coldFlag,
+        crewGapYN, crewGapTotal>0?(crewGapTotal/60000).toFixed(3):"",
+        truckMoveYN, truckMoveDoors, truckMoveTotal>0?(truckMoveTotal/60000).toFixed(3):"",
+        s.meta?.desc||"",
+        s.isTest?"YES":"NO",
+        s.ts?new Date(s.ts).toISOString():"",
+      ]);
+    } else {
+      // Batch — one row per completed pallet
+      const pallets = Array.isArray(s.data) ? s.data : [];
+      pallets.filter(p=>p.floorTs||p.taggedTs||p.inductTs).forEach((p, idx) => {
+        const floorTs  = p.floorTs  ? new Date(p.floorTs).toISOString()  : "";
+        const taggedTs = p.taggedTs ? new Date(p.taggedTs).toISOString() : "";
+        const inductTs = p.inductTs ? new Date(p.inductTs).toISOString() : "";
+        const f2t = p.floorTs && p.taggedTs ? ((p.taggedTs - p.floorTs)/60000).toFixed(3) : "";
+        const t2i = p.taggedTs && p.inductTs ? ((p.inductTs - p.taggedTs)/60000).toFixed(3) : "";
+        const f2i = p.floorTs && p.inductTs ? ((p.inductTs - p.floorTs)/60000).toFixed(3) : "";
+        const coldFlag = hasColdChain && p.floorTs && p.inductTs && (p.inductTs - p.floorTs) > 30*60*1000 ? "YES" : "NO";
+        // Crew gaps and truck moves apply to the whole session — repeat on each row
+        rows.push([
+          s.id||"", s.meta?.side||"", s.meta?.door||"", s.meta?.people||"",
+          idx+1,
+          floorTs, taggedTs, inductTs, p.inductPoint||"",
+          f2t, t2i, f2i,
+          coldFlag,
+          crewGapYN, crewGapTotal>0?(crewGapTotal/60000).toFixed(3):"",
+          truckMoveYN, truckMoveDoors, truckMoveTotal>0?(truckMoveTotal/60000).toFixed(3):"",
+          s.meta?.desc||"",
+          s.isTest?"YES":"NO",
+          s.ts?new Date(s.ts).toISOString():"",
+        ]);
+      });
+    }
+  });
+  return rows;
 }
 
 // ── UI Components ─────────────────────────────────────────
@@ -485,7 +544,6 @@ function ObserverTab({ side, nodes, settings }) {
     } catch { return null; }
   });
 
-  // Persist in-progress pallet across tab switches
   const palletKey = "active_pallet_"+side;
   const [pallet, setPalletRaw] = useState(() => { try { const r=localStorage.getItem(palletKey); return r?JSON.parse(r):null; } catch { return null; } });
   const setPallet = useCallback((v) => {
@@ -561,6 +619,34 @@ function ObserverTab({ side, nodes, settings }) {
   const conformityTapped = () => {
     if (!pallet) return false;
     return pallet.taps[side==="DD"?"dd_conformity":"fz_conformity"]!==undefined;
+  };
+
+  // ── FORWARD-ONLY LOCK: returns true if this node is upstream of the furthest tapped node ──
+  const isLockedBySequence = (nodeId) => {
+    if (!pallet || !Object.keys(pallet.taps).length) return false;
+    // Node order for sequence checking
+    const ORDER = side === "DD"
+      ? ["floor","sg4301","sg4311","sg4101","sg4111","sg4300","sg4100","amtu4300","amtu4100","dd_conformity","vl4800","vl4700","sc5800","sc5700","crane_pickup","srm"]
+      : ["floor","sg1301","sg1311","sg1101","sg1111","sg1300","sg1100","amtu1300","amtu1100","fz_conformity","vl1800","vl1700","sc2800","sc2700","crane_pickup","srm"];
+    const nodeIdx = ORDER.indexOf(nodeId);
+    if (nodeIdx === -1) return false;
+    const tappedIndices = Object.keys(pallet.taps).map(k => ORDER.indexOf(k)).filter(i => i !== -1);
+    if (!tappedIndices.length) return false;
+    const maxTapped = Math.max(...tappedIndices);
+    // Lock out anything before the furthest tapped node
+    return nodeIdx < maxTapped;
+  };
+
+  const isLockedBySequence = (nodeId) => {
+    if (!pallet || !Object.keys(pallet.taps).length) return false;
+    const ORDER = side === "DD"
+      ? ["floor","sg4301","sg4311","sg4101","sg4111","sg4300","sg4100","amtu4300","amtu4100","dd_conformity","vl4800","vl4700","sc5800","sc5700","crane_pickup","srm"]
+      : ["floor","sg1301","sg1311","sg1101","sg1111","sg1300","sg1100","amtu1300","amtu1100","fz_conformity","vl1800","vl1700","sc2800","sc2700","crane_pickup","srm"];
+    const nodeIdx = ORDER.indexOf(nodeId);
+    if (nodeIdx === -1) return false;
+    const tappedIndices = Object.keys(pallet.taps).map(k => ORDER.indexOf(k)).filter(i => i !== -1);
+    if (!tappedIndices.length) return false;
+    return nodeIdx < Math.max(...tappedIndices);
   };
 
   const isLaneLocked = (optId) => {
@@ -704,7 +790,7 @@ function ObserverTab({ side, nodes, settings }) {
       savePallet({...pallet,complete:true,cleanRun,endTime:Date.now()}, srmNumber);
     }
   };
-  const rejectPallet   = () => savePallet({...pallet,rejected:true,complete:true,endTime:Date.now()},srmNumber);
+  const rejectPallet = () => savePallet({...pallet,rejected:true,complete:true,endTime:Date.now()},srmNumber);
 
   const endSession = () => {
     const s = {...activeSession,endTime:Date.now()};
@@ -808,28 +894,32 @@ function ObserverTab({ side, nodes, settings }) {
 
         if (node.isCranePickup) {
           const craneTapped = hasTap("crane_pickup");
+          const seqLocked = isLockedBySequence("crane_pickup");
           const isNext = !craneTapped&&(()=>{const prev=nodes[idx-1];if(!prev)return true;if(prev.isLaneSplit)return prev.options.some(o=>hasTap(o.id));return hasTap(prev.id);})();
           return <div key={node.id}>
             {arrow}
-            <NodeBtn state={craneTapped?"tapped":isNext?"current":"default"} onClick={() => tapNode("crane_pickup",false)}>
+            <NodeBtn state={craneTapped?"tapped":seqLocked?"locked":isNext?"current":"default"} disabled={seqLocked&&!craneTapped} onClick={() => !seqLocked&&tapNode("crane_pickup",false)}>
               <div>{craneTapped?"Crane "+craneNumber+" Pickup ✓":"Crane Pickup"}</div>
               {craneTapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps.crane_pickup)}</div>}
               {craneTapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr("crane_pickup")}</div>}
-              {!craneTapped&&isNext&&<div style={{fontSize:11,color:MUTED,fontWeight:400,marginTop:4}}>Tap → select crane</div>}
+              {!craneTapped&&isNext&&!seqLocked&&<div style={{fontSize:11,color:MUTED,fontWeight:400,marginTop:4}}>Tap → select crane</div>}
+              {seqLocked&&!craneTapped&&<div style={{fontSize:10,color:FAINT,marginTop:4}}>locked</div>}
             </NodeBtn>
           </div>;
         }
 
         if (node.isSRM) {
           const srmTapped = hasTap("srm");
+          const seqLocked = isLockedBySequence("srm");
           const isNext = !srmTapped&&(()=>{const prev=nodes[idx-1];if(!prev)return true;if(prev.isCranePickup)return hasTap("crane_pickup");if(prev.isLaneSplit)return prev.options.some(o=>hasTap(o.id));return hasTap(prev.id);})();
           const srmLabel = srmTapped ? "SRM "+(srmNumber||craneNumber)+" ✓" : craneNumber ? "SRM (Crane "+craneNumber+")" : "SRM";
           return <div key={node.id}>
             {arrow}
-            <NodeBtn state={srmTapped?"tapped":isNext?"current":"default"} onClick={() => tapNode("srm",true)}>
+            <NodeBtn state={srmTapped?"tapped":seqLocked?"locked":isNext?"current":"default"} disabled={seqLocked&&!srmTapped} onClick={() => !seqLocked&&tapNode("srm",true)}>
               <div>{srmLabel}</div>
               {srmTapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps.srm)}</div>}
               {srmTapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr("srm")}</div>}
+              {seqLocked&&!srmTapped&&<div style={{fontSize:10,color:FAINT,marginTop:4}}>locked</div>}
             </NodeBtn>
           </div>;
         }
@@ -843,7 +933,9 @@ function ObserverTab({ side, nodes, settings }) {
             const laneBOpts = node.options.filter(o => o.lane === "B");
             const renderSGBtn = (opt) => {
               const tapped = hasTap(opt.id);
-              const locked = anySGTapped && !tapped;
+              const laneLocked = anySGTapped && !tapped;
+              const seqLocked = !tapped && isLockedBySequence(opt.id);
+              const locked = laneLocked || seqLocked;
               return <NodeBtn key={opt.id} state={tapped?"tapped":locked?"locked":"default"}
                 disabled={locked} onClick={() => { if(tapped||locked)return; tapNode(opt.id,false); }}>
                 <div style={{fontSize:13}}>{opt.label}</div>
@@ -865,7 +957,9 @@ function ObserverTab({ side, nodes, settings }) {
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,alignItems:"start"}}>
               {node.options.map(opt => {
                 const tapped = hasTap(opt.id);
-                const locked = isLaneLocked(opt.id);
+                const laneLocked = isLaneLocked(opt.id);
+                const seqLocked = !tapped && isLockedBySequence(opt.id);
+                const locked = laneLocked || seqLocked;
                 return <NodeBtn key={opt.id} state={tapped?"tapped":locked?"locked":"default"}
                   disabled={locked} onClick={() => { if(tapped||locked)return; tapNode(opt.id,false); }}>
                   <div>{opt.label}</div>
@@ -879,13 +973,15 @@ function ObserverTab({ side, nodes, settings }) {
         }
 
         const tapped = hasTap(node.id);
-        const isNext = !tapped&&(idx===0||(()=>{const prev=nodes[idx-1];if(!prev)return true;if(prev.isLaneSplit)return prev.options.some(o=>hasTap(o.id));return hasTap(prev.id);})());
+        const seqLocked = !tapped && isLockedBySequence(node.id);
+        const isNext = !tapped&&!seqLocked&&(idx===0||(()=>{const prev=nodes[idx-1];if(!prev)return true;if(prev.isLaneSplit)return prev.options.some(o=>hasTap(o.id));return hasTap(prev.id);})());
         return <div key={node.id}>
           {arrow}
-          <NodeBtn state={tapped?"tapped":isNext?"current":"default"} onClick={() => tapNode(node.id,false)}>
+          <NodeBtn state={tapped?"tapped":seqLocked?"locked":isNext?"current":"default"} disabled={seqLocked} onClick={() => !seqLocked&&tapNode(node.id,false)}>
             <div>{node.label}</div>
             {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(pallet.taps[node.id])}</div>}
             {tapped&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>{getSegStr(node.id)}</div>}
+            {seqLocked&&<div style={{fontSize:10,color:FAINT,marginTop:4}}>locked</div>}
           </NodeBtn>
         </div>;
       })}
@@ -924,20 +1020,8 @@ function ConformityTab() {
   const elapsed = running && startTs ? now - startTs : 0;
   const liveRate = clickCount > 0 && elapsed > 0 ? (clickCount / (elapsed / 3600000)) : null;
 
-  const handleStart = () => {
-    setStartTs(Date.now());
-    setRunning(true);
-    setClickCount(0);
-    setLastClickTs(null);
-    setShowResult(null);
-  };
-
-  const handleClick = () => {
-    if (!running) return;
-    setClickCount(c => c + 1);
-    setLastClickTs(Date.now());
-  };
-
+  const handleStart = () => { setStartTs(Date.now()); setRunning(true); setClickCount(0); setLastClickTs(null); setShowResult(null); };
+  const handleClick = () => { if (!running) return; setClickCount(c => c + 1); setLastClickTs(Date.now()); };
   const handleStop = () => setRunning(false);
 
   const handleSave = () => {
@@ -946,38 +1030,18 @@ function ConformityTab() {
     const durationMs = endTs - startTs;
     const palletsPerHour = clickCount / (durationMs / 3600000);
     const palletsPerMin = clickCount / (durationMs / 60000);
-    const session = {
-      id: "CF" + Date.now().toString(36).toUpperCase().slice(-5),
-      ts: endTs, side, mode, startTs, endTs, durationMs,
-      palletCount: clickCount, palletsPerHour, palletsPerMin,
-      isTest: false,
-    };
+    const session = { id: "CF" + Date.now().toString(36).toUpperCase().slice(-5), ts: endTs, side, mode, startTs, endTs, durationMs, palletCount: clickCount, palletsPerHour, palletsPerMin, isTest: false };
     setConformitySessions(prev => [...prev, session]);
     setShowResult(session);
     setStartTs(null);
     setClickCount(0);
   };
 
-  const reset = () => {
-    setRunning(false); setStartTs(null); setClickCount(0);
-    setShowResult(null); setSide(null); setMode(null); setLastClickTs(null);
-  };
-
-  const deleteSession = (id) => {
-    setConformitySessions(prev => prev.filter(s => s.id !== id));
-  };
-
-  const toggleTest = (id) => {
-    setConformitySessions(prev => prev.map(s => s.id === id ? {...s, isTest: !s.isTest} : s));
-  };
-
-  const clearTestSessions = () => {
-    setConformitySessions(prev => prev.filter(s => !s.isTest));
-    setConfirmAction(null);
-  };
-
+  const reset = () => { setRunning(false); setStartTs(null); setClickCount(0); setShowResult(null); setSide(null); setMode(null); setLastClickTs(null); };
+  const deleteSession = (id) => { setConformitySessions(prev => prev.filter(s => s.id !== id)); };
+  const toggleTest = (id) => { setConformitySessions(prev => prev.map(s => s.id === id ? {...s, isTest: !s.isTest} : s)); };
+  const clearTestSessions = () => { setConformitySessions(prev => prev.filter(s => !s.isTest)); setConfirmAction(null); };
   const testCount = conformitySessions.filter(s => s.isTest).length;
-
   const realSessions = conformitySessions.filter(s => !s.isTest);
   const ddSessions = realSessions.filter(s => s.side === "DD");
   const fzSessions = realSessions.filter(s => s.side === "FZ");
@@ -986,28 +1050,8 @@ function ConformityTab() {
   const minRate = (arr, m) => { const f=arr.filter(s=>s.mode===m); if(!f.length)return null; return Math.min(...f.map(s=>s.palletsPerHour)); };
 
   return <div>
-    {confirmAction?.type === "clearTest" && (
-      <Confirm
-        title={`Clear ${testCount} Test Session${testCount!==1?"s":""}?`}
-        body="This permanently deletes all sessions marked as test data. Real data is not affected."
-        yesLabel="Clear Test Sessions"
-        noLabel="Cancel"
-        dangerNo={false}
-        onYes={clearTestSessions}
-        onNo={() => setConfirmAction(null)}
-      />
-    )}
-    {confirmAction?.type === "deleteOne" && (
-      <Confirm
-        title="Delete Session?"
-        body={"Permanently delete session " + confirmAction.id + "?"}
-        yesLabel="Delete"
-        noLabel="Cancel"
-        dangerNo
-        onYes={() => { deleteSession(confirmAction.id); setConfirmAction(null); }}
-        onNo={() => setConfirmAction(null)}
-      />
-    )}
+    {confirmAction?.type === "clearTest" && <Confirm title={`Clear ${testCount} Test Session${testCount!==1?"s":""}?`} body="This permanently deletes all sessions marked as test data. Real data is not affected." yesLabel="Clear Test Sessions" noLabel="Cancel" dangerNo={false} onYes={clearTestSessions} onNo={() => setConfirmAction(null)}/>}
+    {confirmAction?.type === "deleteOne" && <Confirm title="Delete Session?" body={"Permanently delete session " + confirmAction.id + "?"} yesLabel="Delete" noLabel="Cancel" dangerNo onYes={() => { deleteSession(confirmAction.id); setConfirmAction(null); }} onNo={() => setConfirmAction(null)}/>}
 
     <SLabel mt={4}>Conformity Throughput Counter</SLabel>
 
@@ -1032,7 +1076,6 @@ function ConformityTab() {
         <div style={{fontSize:11,color:MUTED,marginBottom:16,marginTop:-4,paddingLeft:4}}>Running with freight downstream, conformity throttled by VL/SC</div>
         <Btn variant="primary" disabled={!side||!mode} onClick={handleStart}>Start Timer</Btn>
       </>}
-
       {running && <>
         <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:10,padding:"16px",marginBottom:12,textAlign:"center"}}>
           <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:side==="DD"?ORANGE:BLUE,marginBottom:6}}>{side} · {mode==="uncontested"?"Uncontested":"Constrained"}</div>
@@ -1040,13 +1083,10 @@ function ConformityTab() {
           <div style={{fontSize:48,fontWeight:900,color:GREEN,margin:"8px 0"}}>{clickCount}</div>
           <div style={{fontSize:12,color:MUTED,marginBottom:12}}>pallets counted{liveRate?` · ${liveRate.toFixed(1)}/hr live`:""}</div>
         </div>
-        <button onClick={handleClick} style={{display:"block",width:"100%",background:"rgba(76,175,125,0.15)",border:"3px solid "+GREEN,color:GREEN,borderRadius:14,padding:"28px 12px",fontSize:20,fontWeight:900,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:12,letterSpacing:0.5,WebkitTapHighlightColor:"transparent"}}>
-          TAP — Pallet Through ✓
-        </button>
+        <button onClick={handleClick} style={{display:"block",width:"100%",background:"rgba(76,175,125,0.15)",border:"3px solid "+GREEN,color:GREEN,borderRadius:14,padding:"28px 12px",fontSize:20,fontWeight:900,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:12,letterSpacing:0.5,WebkitTapHighlightColor:"transparent"}}>TAP — Pallet Through ✓</button>
         <button onClick={handleStop} style={{display:"block",width:"100%",background:RED,color:"#fff",border:"none",borderRadius:10,padding:"16px 32px",fontSize:16,fontWeight:700,fontFamily:"inherit",cursor:"pointer",textAlign:"center",marginBottom:8}}>Stop Timer</button>
         <Btn variant="ghost" small onClick={reset}>Cancel</Btn>
       </>}
-
       {!running && startTs && <>
         <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:10,padding:"16px",marginBottom:16,textAlign:"center"}}>
           <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:side==="DD"?ORANGE:BLUE,marginBottom:6}}>{side} · {mode==="uncontested"?"Uncontested":"Constrained"}</div>
@@ -1070,10 +1110,7 @@ function ConformityTab() {
         if(!uc&&!co)return null;
         return <Card key={s}>
           <div style={{fontSize:12,fontWeight:700,color:s==="DD"?ORANGE2:BLUE,marginBottom:10}}>{s==="DD"?"Dairy/Deli":"Freezer"} Conformity</div>
-          <StatPair
-            left={uc?{label:"Uncontested Avg",value:uc.toFixed(1),color:GREEN,sub:`min ${ucMin.toFixed(1)} · max ${ucMax.toFixed(1)}`}:{label:"Uncontested",value:"--",color:MUTED}}
-            right={co?{label:"Constrained Avg",value:co.toFixed(1),color:ORANGE2,sub:`min ${coMin.toFixed(1)} · max ${coMax.toFixed(1)}`}:{label:"Constrained",value:"--",color:MUTED}}
-          />
+          <StatPair left={uc?{label:"Uncontested Avg",value:uc.toFixed(1),color:GREEN,sub:`min ${ucMin.toFixed(1)} · max ${ucMax.toFixed(1)}`}:{label:"Uncontested",value:"--",color:MUTED}} right={co?{label:"Constrained Avg",value:co.toFixed(1),color:ORANGE2,sub:`min ${coMin.toFixed(1)} · max ${coMax.toFixed(1)}`}:{label:"Constrained",value:"--",color:MUTED}}/>
           {uc&&co&&<div style={{fontSize:12,color:MUTED}}>Downstream tax: <span style={{color:RED,fontWeight:700}}>{(uc-co).toFixed(1)}/hr ({(((uc-co)/uc)*100).toFixed(0)}% loss)</span></div>}
         </Card>;
       })}
@@ -1083,30 +1120,12 @@ function ConformityTab() {
       <Hr/>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
         <SLabel mt={0}>Sessions ({conformitySessions.length})</SLabel>
-        {testCount > 0 && (
-          <button
-            onClick={() => setConfirmAction({type:"clearTest"})}
-            style={{background:"rgba(224,82,82,0.15)",border:"1px solid rgba(224,82,82,0.4)",color:RED,fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",letterSpacing:0.5}}
-          >
-            Clear {testCount} Test{testCount!==1?"s":""}
-          </button>
-        )}
+        {testCount > 0 && <button onClick={() => setConfirmAction({type:"clearTest"})} style={{background:"rgba(224,82,82,0.15)",border:"1px solid rgba(224,82,82,0.4)",color:RED,fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",letterSpacing:0.5}}>Clear {testCount} Test{testCount!==1?"s":""}</button>}
       </div>
       <div style={{fontSize:11,color:FAINT,marginBottom:10,marginTop:-6}}>← Swipe left to delete or mark as test</div>
-
       {conformitySessions.slice().reverse().map(s => (
-        <SwipeableRow
-          key={s.id}
-          isTest={s.isTest}
-          onDelete={() => setConfirmAction({type:"deleteOne", id:s.id})}
-          onToggleTest={() => toggleTest(s.id)}
-        >
-          <div style={{
-            background: s.isTest ? "rgba(240,192,64,0.07)" : CARD,
-            border: "1px solid " + (s.isTest ? "rgba(240,192,64,0.3)" : BORDER),
-            borderRadius:10,
-            padding:"12px 14px",
-          }}>
+        <SwipeableRow key={s.id} isTest={s.isTest} onDelete={() => setConfirmAction({type:"deleteOne", id:s.id})} onToggleTest={() => toggleTest(s.id)}>
+          <div style={{background: s.isTest ? "rgba(240,192,64,0.07)" : CARD, border: "1px solid " + (s.isTest ? "rgba(240,192,64,0.3)" : BORDER), borderRadius:10, padding:"12px 14px"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <div>
                 <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4,flexWrap:"wrap"}}>
@@ -1117,9 +1136,7 @@ function ConformityTab() {
                 </div>
                 <div style={{fontSize:11,color:MUTED}}>{s.palletCount} pallets · {fmt(s.durationMs)} · {new Date(s.ts).toLocaleDateString()}</div>
               </div>
-              <div style={{fontSize:20,fontWeight:700,color:s.isTest?FAINT:ORANGE2,marginLeft:8}}>
-                {s.palletsPerHour.toFixed(1)}<span style={{fontSize:10,color:MUTED}}>/hr</span>
-              </div>
+              <div style={{fontSize:20,fontWeight:700,color:s.isTest?FAINT:ORANGE2,marginLeft:8}}>{s.palletsPerHour.toFixed(1)}<span style={{fontSize:10,color:MUTED}}>/hr</span></div>
             </div>
           </div>
         </SwipeableRow>
@@ -1137,21 +1154,15 @@ function ManHourCard({ people, elapsedMs, palletCount, label }) {
   const perPallet = palletCount>0?manHrs/palletCount:null;
   return <div style={{background:"rgba(76,175,125,0.07)",border:"1px solid "+GREEN2,borderRadius:10,padding:"14px 16px",marginBottom:14}}>
     <div style={{fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:GREEN,marginBottom:12}}>{label}</div>
-    <StatPair
-      left={{label:"Man-Hrs Total",value:manHrs.toFixed(2),color:GREEN}}
-      right={{label:"Per Pallet",value:perPallet?perPallet.toFixed(3):"--",color:perPallet?ORANGE2:MUTED}}
-    />
+    <StatPair left={{label:"Man-Hrs Total",value:manHrs.toFixed(2),color:GREEN}} right={{label:"Per Pallet",value:perPallet?perPallet.toFixed(3):"--",color:perPallet?ORANGE2:MUTED}}/>
     <div style={{fontSize:11,color:MUTED}}>{people} people · {fmt(elapsedMs)} · {palletCount} pallets</div>
   </div>;
 }
 
-// ── Segment Time Display (FDD) ────────────────────────────
-// Shows floor→tagged, tagged→induct, and total splits inline
 function SegSplit({ fromTs, toTs, label, color }) {
   if (!fromTs || !toTs) return null;
   return (
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-      background:"rgba(0,0,0,0.15)",borderRadius:6,padding:"5px 10px",marginTop:4}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"rgba(0,0,0,0.15)",borderRadius:6,padding:"5px 10px",marginTop:4}}>
       <span style={{fontSize:11,color:MUTED}}>{label}</span>
       <span style={{fontSize:12,fontWeight:700,color:color||ORANGE2}}>{fmt(toTs-fromTs)}</span>
     </div>
@@ -1169,6 +1180,7 @@ function UnloadingTab({ settings }) {
   const setMeta = (fn) => setActive(p=>({...p,meta:typeof fn==="function"?fn(p.meta):fn}));
   const setSingle = (fn) => setActive(p=>({...p,single:typeof fn==="function"?fn(p.single):fn}));
   const setBatch = (fn) => setActive(p=>({...p,batch:typeof fn==="function"?fn(p.batch):fn}));
+  const setBatchStart = (v) => setActive(p=>({...p,batchStart:v}));
   const [now,setNow] = useState(Date.now());
   const [showInductPicker, setShowInductPicker] = useState(false);
   const [showInductPickerIdx, setShowInductPickerIdx] = useState(null);
@@ -1192,11 +1204,9 @@ function UnloadingTab({ settings }) {
     setShowTruckMove(false);
   };
 
-  const INDUCT = {FZ:["SG 1301","SG 1311","SG 1101","SG 1111"],DD:["SG 4301","SG 4311","SG 4101","SG 4111"]};
   const completedBatch = batch.filter(p=>p.floorTs&&p.inductTs);
   const batchElapsed = batchStart?now-batchStart:0;
-  const ta  = {width:"100%",background:CARD,border:"1px solid "+BORDER,color:TEXT,fontFamily:"inherit",fontSize:13,padding:"10px 12px",borderRadius:6,outline:"none",resize:"none",boxSizing:"border-box",marginBottom:12};
-  const inp = {width:"100%",background:CARD,border:"1px solid "+BORDER,color:TEXT,fontFamily:"inherit",fontSize:13,padding:"10px 12px",borderRadius:6,outline:"none",marginBottom:8,boxSizing:"border-box"};
+  const ta = {width:"100%",background:CARD,border:"1px solid "+BORDER,color:TEXT,fontFamily:"inherit",fontSize:13,padding:"10px 12px",borderRadius:6,outline:"none",resize:"none",boxSizing:"border-box",marginBottom:12};
 
   const saveSession = () => {
     const sessionElapsed = mode==="batch"&&batchStart?Date.now()-batchStart:(single.induct&&single.floor?single.induct-single.floor:0);
@@ -1214,12 +1224,8 @@ function UnloadingTab({ settings }) {
     setActive({...BLANK});
   };
 
-  const discardSession = () => {
-    clearFDDActive();
-    setActive({...BLANK});
-  };
+  const discardSession = () => { clearFDDActive(); setActive({...BLANK}); };
 
-  // ── Setup screen ──────────────────────────────────────
   if (!mode) return <div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4,marginBottom:0}}>
       <SLabel mt={4}>Side</SLabel>
@@ -1272,7 +1278,6 @@ function UnloadingTab({ settings }) {
     </>}
   </div>;
 
-  // ── Single pallet mode ────────────────────────────────
   if (mode==="single") return <div>
     {showInductPicker&&<InductPicker side={meta.side} onSelect={pt=>{setSingle(p=>({...p,induct:Date.now(),inductPoint:pt}));setShowInductPicker(false);}}/>}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -1289,20 +1294,18 @@ function UnloadingTab({ settings }) {
       <div style={{fontSize:32,fontWeight:700,color:ORANGE2}}>{fmt(now-single.floor)}</div>
     </div>}
 
-    {/* Results card when complete */}
     {single.floor&&single.induct&&<ManHourCard people={meta.people} elapsedMs={single.induct-single.floor} palletCount={1} label="Results"/>}
 
-    {/* Segment splits display */}
     {(single.floor&&single.tagged)||single.induct ? <div style={{marginBottom:12}}>
       {single.floor&&single.tagged&&<SegSplit fromTs={single.floor} toTs={single.tagged} label="Floor → Tagged" color={PURPLE}/>}
       {single.tagged&&single.induct&&<SegSplit fromTs={single.tagged} toTs={single.induct} label="Tagged → Induct" color={BLUE}/>}
       {single.floor&&single.induct&&<SegSplit fromTs={single.floor} toTs={single.induct} label="Total (Floor → Induct)" color={GREEN}/>}
     </div> : null}
 
-    {/* Floor tap */}
+    {/* Floor — always tappable, locks after tapped */}
     <NodeBtn
       state={single.floor?"tapped":"current"}
-      onClick={()=>setSingle(p=>({...p,floor:p.floor||Date.now()}))}
+      onClick={()=>!single.floor&&setSingle(p=>({...p,floor:Date.now()}))}
     >
       {single.floor
         ? <><div>Floor Hit ✓</div><div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(single.floor)}</div></>
@@ -1312,27 +1315,27 @@ function UnloadingTab({ settings }) {
 
     <div style={{textAlign:"center",color:FAINT,fontSize:13,margin:"-2px 0 4px"}}>↓</div>
 
-    {/* Tagged tap — purple / goddess label */}
+    {/* Tagged — only forward, locks after tapped */}
     <NodeBtn
-      state={single.tagged?"purple":single.floor?"current":"default"}
-      disabled={!single.floor}
-      onClick={()=>single.floor&&setSingle(p=>({...p,tagged:p.tagged||Date.now()}))}
+      state={single.tagged?"purple":single.floor&&!single.induct?"current":"locked"}
+      disabled={!single.floor||!!single.induct}
+      onClick={()=>single.floor&&!single.tagged&&!single.induct&&setSingle(p=>({...p,tagged:Date.now()}))}
     >
       {single.tagged
         ? <><div>Tagged ✓ <span style={{fontSize:11,fontWeight:400,color:PURPLE}}>⬡ Label Applied</span></div>
             <div style={{fontSize:11,color:PURPLE,fontWeight:400,marginTop:4}}>{fmtTime(single.tagged)}</div>
             {single.floor&&<div style={{fontSize:11,color:PURPLE,fontWeight:400}}>+{fmt(single.tagged-single.floor)} from floor</div>}
           </>
-        : "Tap — Tag"
+        : single.floor && !single.induct ? "Tap — Tag" : <span style={{color:FAINT}}>{single.induct?"locked":"waiting for Floor"}</span>
       }
     </NodeBtn>
 
     <div style={{textAlign:"center",color:FAINT,fontSize:13,margin:"-2px 0 4px"}}>↓</div>
 
-    {/* Induct tap */}
+    {/* Induct — only forward, locks after tapped */}
     <NodeBtn
-      state={single.induct?"tapped":single.floor?"current":"default"}
-      disabled={!single.floor}
+      state={single.induct?"tapped":single.floor?"current":"locked"}
+      disabled={!single.floor||!!single.induct}
       onClick={()=>single.floor&&!single.induct&&setShowInductPicker(true)}
     >
       {single.induct
@@ -1340,7 +1343,7 @@ function UnloadingTab({ settings }) {
             <div style={{fontSize:11,color:GREEN,fontWeight:400,marginTop:4}}>{fmtTime(single.induct)}</div>
             {single.floor&&<div style={{fontSize:11,color:GREEN,fontWeight:400}}>+{fmt(single.induct-single.floor)} total</div>}
           </>
-        : "Tap — Induction"
+        : single.floor ? "Tap — Induction" : <span style={{color:FAINT}}>waiting for Floor</span>
       }
     </NodeBtn>
 
@@ -1393,7 +1396,10 @@ function UnloadingTab({ settings }) {
 
   // ── Batch mode ────────────────────────────────────────
   return <div>
-    {showInductPickerIdx!==null&&<InductPicker side={meta.side} onSelect={pt=>{setBatch(prev=>{const n=[...prev];n[showInductPickerIdx]={...n[showInductPickerIdx],inductTs:n[showInductPickerIdx].inductTs||Date.now(),inductPoint:pt};return n;});setShowInductPickerIdx(null);}}/>}
+    {showInductPickerIdx!==null&&<InductPicker side={meta.side} onSelect={pt=>{
+      setBatch(prev=>{const n=[...prev];n[showInductPickerIdx]={...n[showInductPickerIdx],inductTs:n[showInductPickerIdx].inductTs||Date.now(),inductPoint:pt};return n;});
+      setShowInductPickerIdx(null);
+    }}/>}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
       <div style={{display:"flex",gap:6}}>
         <Chip label="Batch" color="orange"/>
@@ -1408,38 +1414,45 @@ function UnloadingTab({ settings }) {
     {batch.map((p,i)=><Card key={p.id}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <span style={{fontSize:13,fontWeight:700,color:TEXT}}>Pallet {p.id}</span>
-        {/* Show total time if complete */}
         {p.floorTs&&p.inductTs&&<span style={{fontSize:13,fontWeight:700,color:GREEN}}>{fmt(p.inductTs-p.floorTs)}</span>}
       </div>
 
-      {/* Three-button row: Floor | Tagged | Induct */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,alignItems:"start"}}>
-        {/* Floor */}
+        {/* Floor — locks after tapped */}
         <Btn small variant={p.floorTs?"success":"primary"} style={{marginBottom:0}}
           onClick={()=>{
-            if(!batchStart)setBatchStart(Date.now());
-            setBatch(prev=>{const n=[...prev];n[i]={...n[i],floorTs:n[i].floorTs||Date.now()};return n;});
+            if(p.floorTs) return; // forward-only: can't re-tap
+            if(!batchStart) setBatchStart(Date.now());
+            setBatch(prev=>{const n=[...prev];n[i]={...n[i],floorTs:Date.now()};return n;});
           }}>
           {p.floorTs?"Floor ✓":"Floor"}
         </Btn>
 
-        {/* Tagged */}
+        {/* Tagged — forward-only: only if floor tapped and induct not yet tapped */}
         <Btn small
-          variant={p.taggedTs?"purpleSolid":p.floorTs?"purple":"ghost"}
-          disabled={!p.floorTs}
+          variant={p.taggedTs?"purpleSolid":p.floorTs&&!p.inductTs?"purple":"ghost"}
+          disabled={!p.floorTs||!!p.taggedTs||!!p.inductTs}
           style={{marginBottom:0}}
-          onClick={()=>p.floorTs&&setBatch(prev=>{const n=[...prev];n[i]={...n[i],taggedTs:n[i].taggedTs||Date.now()};return n;})}>
+          onClick={()=>{
+            if(!p.floorTs||p.taggedTs||p.inductTs) return;
+            setBatch(prev=>{const n=[...prev];n[i]={...n[i],taggedTs:Date.now()};return n;});
+          }}>
           {p.taggedTs?"Tagged ✓":"Tag"}
         </Btn>
 
-        {/* Induct */}
-        <Btn small variant={p.inductTs?"success":p.floorTs?"primary":"ghost"} disabled={!p.floorTs} style={{marginBottom:0}}
-          onClick={()=>p.floorTs&&!p.inductTs&&setShowInductPickerIdx(i)}>
+        {/* Induct — forward-only: only if floor tapped and induct not yet tapped */}
+        <Btn small
+          variant={p.inductTs?"success":p.floorTs&&!p.inductTs?"primary":"ghost"}
+          disabled={!p.floorTs||!!p.inductTs}
+          style={{marginBottom:0}}
+          onClick={()=>{
+            if(!p.floorTs||p.inductTs) return;
+            setShowInductPickerIdx(i);
+          }}>
           {p.inductTs?"Induct ✓"+(p.inductPoint?" ("+p.inductPoint.replace("SG ","SG")+")":""):"Induct"}
         </Btn>
       </div>
 
-      {/* Inline segment splits for this pallet */}
       {(p.floorTs&&p.taggedTs)||(p.taggedTs&&p.inductTs)||(p.floorTs&&p.inductTs) ? <div style={{marginTop:6}}>
         {p.floorTs&&p.taggedTs&&<SegSplit fromTs={p.floorTs} toTs={p.taggedTs} label="Floor→Tag" color={PURPLE}/>}
         {p.taggedTs&&p.inductTs&&<SegSplit fromTs={p.taggedTs} toTs={p.inductTs} label="Tag→Induct" color={BLUE}/>}
@@ -1469,7 +1482,6 @@ function UnloadingTab({ settings }) {
       <span>Gap {i+1} — {new Date(g.start).toLocaleTimeString()}</span>
       <span style={{color:RED,fontWeight:700}}>{fmt(g.duration)}</span>
     </div>)}
-
     <Hr/>
     <SLabel>Crew to Another Truck</SLabel>
     {showTruckMove
@@ -1505,11 +1517,7 @@ function HistoryTab() {
   const [activeTab,setActiveTab] = useState("sessions");
 
   const totalTime = (p)=>{const v=Object.values(p.taps||{});return v.length<2?null:Math.max(...v)-Math.min(...v);};
-
-  const allSessions = [
-    ...ddSessions.map(s=>({...s,sideLabel:"DD"})),
-    ...fzSessions.map(s=>({...s,sideLabel:"FZ"})),
-  ].sort((a,b)=>(b.startTime||0)-(a.startTime||0));
+  const allSessions = [...ddSessions.map(s=>({...s,sideLabel:"DD"})),...fzSessions.map(s=>({...s,sideLabel:"FZ"}))].sort((a,b)=>(b.startTime||0)-(a.startTime||0));
 
   const deleteSession = (session) => {
     if (session.sideLabel==="DD") setDdSessions(prev=>prev.filter(s=>s.id!==session.id));
@@ -1527,23 +1535,13 @@ function HistoryTab() {
   const dockTestCount = dockSessions.filter(s=>s.isTest).length;
 
   return <div>
-    {confirmDelete?.type==="session"&&<Confirm title="Delete Session?"
-      body={"Permanently delete session "+confirmDelete.session.id+" and all "+(confirmDelete.session.pallets?.length||0)+" pallets?"}
-      yesLabel="Delete Session" noLabel="Cancel"
-      onYes={()=>deleteSession(confirmDelete.session)} onNo={()=>setConfirmDelete(null)}/>}
-    {confirmDelete?.type==="pallet"&&<Confirm title="Delete Pallet?"
-      body={"Permanently delete observation "+confirmDelete.palletId+"?"}
-      yesLabel="Delete Pallet" noLabel="Cancel"
-      onYes={()=>deletePallet(confirmDelete.session,confirmDelete.palletId)} onNo={()=>setConfirmDelete(null)}/>}
-    {confirmDelete?.type==="dock"&&<Confirm title="Delete Dock Session?"
-      body={"Permanently delete session "+confirmDelete.id+"?"}
-      yesLabel="Delete" noLabel="Cancel"
-      onYes={()=>deleteDockSession(confirmDelete.id)} onNo={()=>setConfirmDelete(null)}/>}
+    {confirmDelete?.type==="session"&&<Confirm title="Delete Session?" body={"Permanently delete session "+confirmDelete.session.id+" and all "+(confirmDelete.session.pallets?.length||0)+" pallets?"} yesLabel="Delete Session" noLabel="Cancel" onYes={()=>deleteSession(confirmDelete.session)} onNo={()=>setConfirmDelete(null)}/>}
+    {confirmDelete?.type==="pallet"&&<Confirm title="Delete Pallet?" body={"Permanently delete observation "+confirmDelete.palletId+"?"} yesLabel="Delete Pallet" noLabel="Cancel" onYes={()=>deletePallet(confirmDelete.session,confirmDelete.palletId)} onNo={()=>setConfirmDelete(null)}/>}
+    {confirmDelete?.type==="dock"&&<Confirm title="Delete Dock Session?" body={"Permanently delete session "+confirmDelete.id+"?"} yesLabel="Delete" noLabel="Cancel" onYes={()=>deleteDockSession(confirmDelete.id)} onNo={()=>setConfirmDelete(null)}/>}
 
     <div style={{display:"flex",gap:6,marginTop:16,marginBottom:16}}>
       {["sessions","dock"].map(t=>(
-        <button key={t} onClick={()=>setActiveTab(t)} style={{padding:"8px 18px",fontSize:12,fontWeight:700,fontFamily:"inherit",borderRadius:6,cursor:"pointer",
-          border:"1px solid "+(activeTab===t?ORANGE:BORDER),background:activeTab===t?"rgba(232,118,10,0.15)":CARD,color:activeTab===t?ORANGE2:MUTED}}>
+        <button key={t} onClick={()=>setActiveTab(t)} style={{padding:"8px 18px",fontSize:12,fontWeight:700,fontFamily:"inherit",borderRadius:6,cursor:"pointer",border:"1px solid "+(activeTab===t?ORANGE:BORDER),background:activeTab===t?"rgba(232,118,10,0.15)":CARD,color:activeTab===t?ORANGE2:MUTED}}>
           {t==="sessions"?"Observer Sessions":"FDD Receiving"}
         </button>
       ))}
@@ -1559,27 +1557,16 @@ function HistoryTab() {
               <Chip label={s.sideLabel} color={s.sideLabel==="DD"?"orange":"blue"}/>
               <span style={{fontSize:12,fontWeight:700,color:ORANGE2}}>{s.id}</span>
             </div>
-            <Btn variant="danger" small onClick={()=>setConfirmDelete({type:"session",session:s})}
-              style={{width:"auto",padding:"4px 10px",marginBottom:0,fontSize:11}}>Delete Session</Btn>
+            <Btn variant="danger" small onClick={()=>setConfirmDelete({type:"session",session:s})} style={{width:"auto",padding:"4px 10px",marginBottom:0,fontSize:11}}>Delete Session</Btn>
           </div>
           <div style={{fontSize:12,color:MUTED,marginBottom:8}}>{s.condition} · {s.pallets?.length||0} pallets · {new Date(s.startTime).toLocaleDateString()}</div>
           {s.pallets?.map(p=>(
-            <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-              padding:"8px 10px",background:SURFACE,borderRadius:6,marginBottom:4}}>
+            <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:SURFACE,borderRadius:6,marginBottom:4}}>
               <div>
                 <div style={{fontSize:11,fontWeight:700,color:TEXT}}>{p.id}</div>
-                <div style={{fontSize:10,color:MUTED}}>
-                  {Object.keys(p.taps||{}).length} nodes · {fmt(totalTime(p))}
-                  {p.rejected?" · REJECTED":""}
-                  {p.coldChainFlag?" · COLD FLAG":""}
-                  {p.cleanRun?" · CLEAN RUN":""}
-                  {p.pairedTravel?" · "+p.pairedTravel.toUpperCase():""}
-                </div>
+                <div style={{fontSize:10,color:MUTED}}>{Object.keys(p.taps||{}).length} nodes · {fmt(totalTime(p))}{p.rejected?" · REJECTED":""}{p.coldChainFlag?" · COLD FLAG":""}{p.cleanRun?" · CLEAN RUN":""}{p.pairedTravel?" · "+p.pairedTravel.toUpperCase():""}</div>
               </div>
-              <button onClick={()=>setConfirmDelete({type:"pallet",session:s,palletId:p.id})}
-                style={{background:"transparent",border:"1px solid "+BORDER,color:MUTED,fontSize:10,fontWeight:700,padding:"4px 8px",borderRadius:4,cursor:"pointer",fontFamily:"inherit"}}>
-                Delete
-              </button>
+              <button onClick={()=>setConfirmDelete({type:"pallet",session:s,palletId:p.id})} style={{background:"transparent",border:"1px solid "+BORDER,color:MUTED,fontSize:10,fontWeight:700,padding:"4px 8px",borderRadius:4,cursor:"pointer",fontFamily:"inherit"}}>Delete</button>
             </div>
           ))}
         </Card>
@@ -1587,25 +1574,15 @@ function HistoryTab() {
     </>}
 
     {activeTab==="dock"&&<>
-      {confirmDelete?.type==="clearTestDock"&&<Confirm title={"Clear "+dockTestCount+" Test Session"+(dockTestCount!==1?"s":"")+"?"}
-        body="Permanently deletes all FDD sessions marked as test data. Real data is not affected."
-        yesLabel="Clear Test Sessions" noLabel="Cancel"
-        onYes={clearTestDock} onNo={()=>setConfirmDelete(null)}/>}
+      {confirmDelete?.type==="clearTestDock"&&<Confirm title={"Clear "+dockTestCount+" Test Session"+(dockTestCount!==1?"s":"")+"?"} body="Permanently deletes all FDD sessions marked as test data. Real data is not affected." yesLabel="Clear Test Sessions" noLabel="Cancel" onYes={clearTestDock} onNo={()=>setConfirmDelete(null)}/>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,marginTop:4}}>
         <SLabel mt={0}>FDD Receiving Sessions ({dockSessions.length})</SLabel>
-        {dockTestCount>0&&(
-          <button onClick={()=>setConfirmDelete({type:"clearTestDock"})}
-            style={{background:"rgba(224,82,82,0.15)",border:"1px solid rgba(224,82,82,0.4)",color:RED,fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit"}}>
-            Clear {dockTestCount} Test{dockTestCount!==1?"s":""}
-          </button>
-        )}
+        {dockTestCount>0&&<button onClick={()=>setConfirmDelete({type:"clearTestDock"})} style={{background:"rgba(224,82,82,0.15)",border:"1px solid rgba(224,82,82,0.4)",color:RED,fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit"}}>Clear {dockTestCount} Test{dockTestCount!==1?"s":""}</button>}
       </div>
       {dockSessions.length===0&&<div style={{color:MUTED,fontSize:13,padding:"12px 0"}}>No sessions yet.</div>}
       {dockSessions.length>0&&<div style={{fontSize:11,color:FAINT,marginBottom:10,marginTop:-6}}>← Swipe left to delete or mark as test</div>}
       {dockSessions.slice().reverse().map(s=>(
-        <SwipeableRow key={s.id} isTest={s.isTest}
-          onDelete={()=>setConfirmDelete({type:"dock",id:s.id})}
-          onToggleTest={()=>toggleTestDock(s.id)}>
+        <SwipeableRow key={s.id} isTest={s.isTest} onDelete={()=>setConfirmDelete({type:"dock",id:s.id})} onToggleTest={()=>toggleTestDock(s.id)}>
           <div style={{background:s.isTest?"rgba(240,192,64,0.07)":CARD,border:"1px solid "+(s.isTest?"rgba(240,192,64,0.3)":BORDER),borderRadius:10,padding:"12px 14px"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
               <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
@@ -1617,16 +1594,6 @@ function HistoryTab() {
             <div style={{fontSize:12,color:MUTED}}>Door {s.meta.door} · {s.meta.people} people · {s.palletCount} pallets</div>
             {s.manHrsPerPallet!=null&&<div style={{fontSize:12,color:s.isTest?FAINT:GREEN,marginTop:4}}>{s.manHrsPerPallet.toFixed(3)} man-hrs/pallet · {s.manHrsTotal?.toFixed(2)} total</div>}
             {s.meta.desc&&<div style={{fontSize:11,color:FAINT,marginTop:4}}>{s.meta.desc}</div>}
-            {/* Show tagged data summary if available */}
-            {s.data&&(()=>{
-              const d = s.mode==="single"?s.data:null;
-              if(d&&d.tagged&&d.floor&&d.induct){
-                return <div style={{fontSize:11,color:PURPLE,marginTop:4}}>
-                  Floor→Tag: {fmt(d.tagged-d.floor)} · Tag→Induct: {fmt(d.induct-d.tagged)}
-                </div>;
-              }
-              return null;
-            })()}
           </div>
         </SwipeableRow>
       ))}
@@ -1711,10 +1678,7 @@ function SummaryTab() {
   const totalManHrs = dockSessions.reduce((a,s)=>a+(s.manHrsTotal||0),0);
   const mhpp = dockSessions.filter(s=>s.manHrsPerPallet).map(s=>s.manHrsPerPallet);
 
-  const allSessions = [
-    ...ddSessions.map(s=>({...s,sideLabel:"DD"})),
-    ...fzSessions.map(s=>({...s,sideLabel:"FZ"})),
-  ].sort((a,b)=>(b.startTime||0)-(a.startTime||0));
+  const allSessions = [...ddSessions.map(s=>({...s,sideLabel:"DD"})),...fzSessions.map(s=>({...s,sideLabel:"FZ"}))].sort((a,b)=>(b.startTime||0)-(a.startTime||0));
   const allPalletsFlat = allSessions.flatMap(s=>(s.pallets||[]).map(p=>({...p,side:s.sideLabel})));
 
   const SYSTEM_CONTEXT = `You are Jonah, the expert from the Theory of Constraints. You observe warehouse mechanized conveyor systems and help find constraints using the Socratic method — you ask pointed questions and share observations, you do not give direct orders.
@@ -1739,39 +1703,22 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
 
   const buildDataPackage = (mode, scope) => {
     if (mode==="overall") {
-      const ddSegs = DD_SEGMENTS.map(seg=>{
-        const times=ddPallets.map(p=>getSegmentTime(p.taps||{},seg.from,seg.to)).filter(t=>t&&t>0);
-        return seg.label+": avg="+fmtAvg(times)+" min="+fmtSeg(times.length?Math.min(...times):null)+" max="+fmtSeg(times.length?Math.max(...times):null)+" n="+times.length;
-      });
-      const fzSegs = FZ_SEGMENTS.map(seg=>{
-        const times=fzPallets.map(p=>getSegmentTime(p.taps||{},seg.from,seg.to)).filter(t=>t&&t>0);
-        return seg.label+": avg="+fmtAvg(times)+" min="+fmtSeg(times.length?Math.min(...times):null)+" max="+fmtSeg(times.length?Math.max(...times):null)+" n="+times.length;
-      });
+      const ddSegs = DD_SEGMENTS.map(seg=>{const times=ddPallets.map(p=>getSegmentTime(p.taps||{},seg.from,seg.to)).filter(t=>t&&t>0);return seg.label+": avg="+fmtAvg(times)+" min="+fmtSeg(times.length?Math.min(...times):null)+" max="+fmtSeg(times.length?Math.max(...times):null)+" n="+times.length;});
+      const fzSegs = FZ_SEGMENTS.map(seg=>{const times=fzPallets.map(p=>getSegmentTime(p.taps||{},seg.from,seg.to)).filter(t=>t&&t>0);return seg.label+": avg="+fmtAvg(times)+" min="+fmtSeg(times.length?Math.min(...times):null)+" max="+fmtSeg(times.length?Math.max(...times):null)+" n="+times.length;});
       const srmDD={};ddPallets.forEach(p=>{if(!p.srmNumber)return;const k="SRM "+p.srmNumber;if(!srmDD[k])srmDD[k]={count:0,times:[]};srmDD[k].count++;const t=totalTime(p);if(t)srmDD[k].times.push(t);});
       const srmFZ={};fzPallets.forEach(p=>{if(!p.srmNumber)return;const k="SRM "+p.srmNumber;if(!srmFZ[k])srmFZ[k]={count:0,times:[]};srmFZ[k].count++;const t=totalTime(p);if(t)srmFZ[k].times.push(t);});
       const ddTimes=ddPallets.map(p=>totalTime(p)).filter(Boolean);
       const fzTimes=fzPallets.map(p=>totalTime(p)).filter(Boolean);
-      const ddClean=ddPallets.filter(p=>p.cleanRun).length;
-      const fzClean=fzPallets.filter(p=>p.cleanRun).length;
-      const ddSingles=ddPallets.filter(p=>p.pairedTravel==="Single").length;
-      const fzSingles=fzPallets.filter(p=>p.pairedTravel==="Single").length;
-      return "OVERALL SYSTEM ANALYSIS\n\nDAIRY/DELI (independent system):\nTotal: "+ddPallets.length+" pallets | Avg full transit: "+fmtAvg(ddTimes)+"\nClean runs: "+ddClean+" | Singles (no pair): "+ddSingles+"\nCold flags: "+ddPallets.filter(p=>p.coldChainFlag).length+" | Rejections: "+ddPallets.filter(p=>p.rejected).length+"\nSegments: "+ddSegs.join(" | ")+"\nSRM distribution: "+Object.entries(srmDD).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ")+"\n\nFREEZER (independent system — no relation to DD):\nTotal: "+fzPallets.length+" pallets | Avg full transit: "+fmtAvg(fzTimes)+"\nClean runs: "+fzClean+" | Singles (no pair): "+fzSingles+"\nCold flags: "+fzPallets.filter(p=>p.coldChainFlag).length+" | Rejections: "+fzPallets.filter(p=>p.rejected).length+"\nSegments: "+fzSegs.join(" | ")+"\nSRM distribution: "+Object.entries(srmFZ).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ")+"\n\nDock receiving: "+dockSessions.length+" sessions, "+dockSessions.reduce((a,s)=>a+(s.manHrsTotal||0),0).toFixed(2)+" total man-hrs\n\nRemember: single pallets waiting at SC for a pair is normal behavior — not a constraint. Analyze each system independently. Where are the constraints? What should the observer look at next?";
+      return "OVERALL SYSTEM ANALYSIS\n\nDAIRY/DELI (independent system):\nTotal: "+ddPallets.length+" pallets | Avg full transit: "+fmtAvg(ddTimes)+"\nClean runs: "+ddPallets.filter(p=>p.cleanRun).length+" | Singles (no pair): "+ddPallets.filter(p=>p.pairedTravel==="Single").length+"\nCold flags: "+ddPallets.filter(p=>p.coldChainFlag).length+" | Rejections: "+ddPallets.filter(p=>p.rejected).length+"\nSegments: "+ddSegs.join(" | ")+"\nSRM distribution: "+Object.entries(srmDD).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ")+"\n\nFREEZER (independent system — no relation to DD):\nTotal: "+fzPallets.length+" pallets | Avg full transit: "+fmtAvg(fzTimes)+"\nClean runs: "+fzPallets.filter(p=>p.cleanRun).length+" | Singles (no pair): "+fzPallets.filter(p=>p.pairedTravel==="Single").length+"\nCold flags: "+fzPallets.filter(p=>p.coldChainFlag).length+" | Rejections: "+fzPallets.filter(p=>p.rejected).length+"\nSegments: "+fzSegs.join(" | ")+"\nSRM distribution: "+Object.entries(srmFZ).map(([k,v])=>k+": "+v.count+" pallets avg "+fmtAvg(v.times)).join(", ")+"\n\nDock receiving: "+dockSessions.length+" sessions, "+dockSessions.reduce((a,s)=>a+(s.manHrsTotal||0),0).toFixed(2)+" total man-hrs\n\nRemember: single pallets waiting at SC for a pair is normal behavior — not a constraint. Analyze each system independently. Where are the constraints? What should the observer look at next?";
     }
     if (mode==="session"&&scope) {
-      const s=scope;
-      const side=s.side||s.sideLabel;
-      const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
-      const palletDetails=(s.pallets||[]).map((p,i)=>{
-        const segTimes=segs.map(seg=>{const t=getSegmentTime(p.taps||{},seg.from,seg.to);return seg.label+": "+fmtSeg(t);}).join(", ");
-        return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")":"")+(p.cleanRun?" | CLEAN RUN":"")+(p.pairedTravel?" | "+p.pairedTravel.toUpperCase():"");
-      });
+      const s=scope;const side=s.side||s.sideLabel;const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
+      const palletDetails=(s.pallets||[]).map((p,i)=>{const segTimes=segs.map(seg=>{const t=getSegmentTime(p.taps||{},seg.from,seg.to);return seg.label+": "+fmtSeg(t);}).join(", ");return "Pallet "+(i+1)+" ("+p.id+"): total="+fmtSeg(totalTime(p))+" | "+segTimes+(p.srmNumber?" | SRM "+p.srmNumber:"")+(p.rejected?" | REJECTED":"")+(p.coldChainFlag?" | COLD FLAG ("+p.coldChainFlag.reason+")":"")+(p.cleanRun?" | CLEAN RUN":"")+(p.pairedTravel?" | "+p.pairedTravel.toUpperCase():"");});
       const offline=Object.entries(s.offline||{}).filter(e=>e[1]).map(e=>e[0]).join(", ")||"none";
       return "SESSION ANALYSIS\n\nSystem: "+side+" ("+(side==="DD"?"Dairy/Deli":"Freezer")+", independent system)\nSession: "+s.id+" | Condition: "+s.condition+" | Date: "+new Date(s.startTime).toLocaleDateString()+"\nEquipment offline: "+offline+"\nNotes: "+(s.notes||"none")+"\n\n"+palletDetails.join("\n")+"\n\nAnalyze this session. Clean runs establish baseline speed. Singles at SC waited for a pair — normal behavior. What patterns stand out? Which segments are slow beyond what pairing explains?";
     }
     if (mode==="pallet"&&scope) {
-      const p=scope;
-      const side=p.side;
-      const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
+      const p=scope;const side=p.side;const segs=side==="DD"?DD_SEGMENTS:FZ_SEGMENTS;
       const segTimes=segs.map(seg=>{const t=getSegmentTime(p.taps||{},seg.from,seg.to);return seg.label+": "+fmtSeg(t);}).join("\n");
       const sorted=Object.entries(p.taps||{}).sort((a,b)=>a[1]-b[1]);
       return "SINGLE PALLET ANALYSIS\n\nSystem: "+side+" ("+(side==="DD"?"Dairy/Deli":"Freezer")+")\nPallet: "+p.id+" | Condition: "+p.condition+"\nTotal transit: "+fmtSeg(totalTime(p))+"\nSRM: "+(p.srmNumber?"SRM "+p.srmNumber:"not recorded")+"\nRejected: "+(p.rejected?"YES":"NO")+"\nCold flag: "+(p.coldChainFlag?"YES — "+p.coldChainFlag.reason:"NO")+"\nClean run: "+(p.cleanRun?"YES":"NO")+"\nTravel type: "+(p.pairedTravel||"not recorded")+"\n\nTap sequence: "+sorted.map(([k,v])=>k+" at "+new Date(v).toLocaleTimeString()).join(" → ")+"\n\nSegments:\n"+segTimes+"\n\nIf this was a single, SC dwell time is expected — don't flag it. Where else did this pallet slow down?";
@@ -1842,8 +1789,37 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
         ...segTimes,offlineList,p.endTime?new Date(p.endTime).toISOString():""]);
     });
     rows.push([]);rows.push(["--- FDD RECEIVING SESSIONS ---"]);
-    rows.push(["Session ID","Side","Door","People","Mode","Pallets","Elapsed (min)","Man-Hrs Total","Man-Hrs Per Pallet","Load Description","Is Test","Date"]);
-    dockSessions.forEach(s=>{rows.push([s.id||"",s.meta?.side||"",s.meta?.door||"",s.meta?.people||"",s.mode||"",s.palletCount||"",s.sessionElapsed?(s.sessionElapsed/60000).toFixed(2):"",s.manHrsTotal?s.manHrsTotal.toFixed(3):"",s.manHrsPerPallet?s.manHrsPerPallet.toFixed(3):"",s.meta?.desc||"",s.isTest?"YES":"NO",s.ts?new Date(s.ts).toISOString():""]);});
+    rows.push(["Session ID","Side","Door","People","Pallet #","Floor TS","Tagged TS","Induct TS","Induct Point","Floor→Tag (min)","Tag→Induct (min)","Floor→Induct (min)","Cold Chain Flag","Crew Gap","Crew Gap Time (min)","Moved to Truck","Move Door(s)","Move Time (min)","Load Description","Is Test","Date"]);
+    dockSessions.forEach(s=>{
+      const side=s.meta?.side||"";
+      const crewGapYN=(s.crewGaps||[]).length>0?"YES":"NO";
+      const crewGapMin=(s.crewGaps||[]).reduce((a,g)=>a+g.duration,0);
+      const moves=s.truckMoves||[];
+      const moveYN=moves.length>0?"YES":"NO";
+      const moveDoors=moves.map(m=>m.door||"?").join(";");
+      const moveMin=moves.reduce((a,m)=>a+m.duration,0);
+      const mkRow=(palletNum,floorTs,taggedTs,inductTs,inductPoint)=>{
+        const f2t=floorTs&&taggedTs?((taggedTs-floorTs)/60000).toFixed(3):"";
+        const t2i=taggedTs&&inductTs?((inductTs-taggedTs)/60000).toFixed(3):"";
+        const f2i=floorTs&&inductTs?((inductTs-floorTs)/60000).toFixed(3):"";
+        const coldFlag=side==="FZ"&&floorTs&&inductTs&&(inductTs-floorTs)>30*60*1000?"YES":"NO";
+        return [s.id||"",side,s.meta?.door||"",s.meta?.people||"",palletNum,
+          floorTs?new Date(floorTs).toISOString():"",taggedTs?new Date(taggedTs).toISOString():"",
+          inductTs?new Date(inductTs).toISOString():"",inductPoint||"",
+          f2t,t2i,f2i,coldFlag,crewGapYN,crewGapMin>0?(crewGapMin/60000).toFixed(3):"",
+          moveYN,moveDoors,moveMin>0?(moveMin/60000).toFixed(3):"",
+          s.meta?.desc||"",s.isTest?"YES":"NO",s.ts?new Date(s.ts).toISOString():""];
+      };
+      if(s.mode==="single"||!s.mode){
+        const d=s.data||{};
+        rows.push(mkRow(1,d.floor,d.tagged,d.induct,d.inductPoint));
+      } else {
+        const pallets=Array.isArray(s.data)?s.data:[];
+        pallets.filter(p=>p.floorTs||p.taggedTs||p.inductTs).forEach((p,idx)=>{
+          rows.push(mkRow(idx+1,p.floorTs,p.taggedTs,p.inductTs,p.inductPoint));
+        });
+      }
+    });
     const conformitySessions = (() => { try { const r=localStorage.getItem("conformity_sessions"); return r?JSON.parse(r):[]; } catch { return []; } })();
     if(conformitySessions.length>0){
       rows.push([]);rows.push(["--- CONFORMITY THROUGHPUT (CTC) SESSIONS ---"]);
@@ -2037,7 +2013,7 @@ Speak in Jonah's voice: direct, curious, Socratic. Point at the data. Ask what t
   </div>;
 }
 
-// ── Settings Tab ──────────────────────────────────────────
+// ── Settings Tab ─────────────────────────────────────────────────
 function SettingsTab({ settings, setSettings }) {
   const [ddSessions] = useStorage("sessions_DD",[]);
   const [fzSessions] = useStorage("sessions_FZ",[]);
@@ -2084,12 +2060,12 @@ function SettingsTab({ settings, setSettings }) {
     <SLabel>Design Rates — Freezer (pallets/hr)</SLabel>
     {CONDITIONS.map(c=><div key={"fz_"+c}><label style={lbl}>{c}</label><input style={inp} type="number" placeholder="Not set — pending manufacturer data" value={settings["fz_rate_"+c]||""} onChange={e=>setSettings(p=>({...p,["fz_rate_"+c]:e.target.value}))}/></div>)}
     <Hr/>
-    <div style={{fontSize:11,color:FAINT,textAlign:"center"}}>TOC - Jonah Edition v5.2 · Local storage · Google Sheets sync enabled</div>
+    <div style={{fontSize:11,color:FAINT,textAlign:"center"}}>TOC - Jonah Edition v5.3 · Local storage · Google Sheets sync enabled</div>
     <div style={{height:24}}/>
   </div>;
 }
 
-// ── App Shell ─────────────────────────────────────────────
+// ── App Shell ─────────────────────────────────────────────────────
 export default function App() {
   const [tab,setTab] = useState("dd");
   const [settings,setSettings] = useStorage("jonah_settings",{coldChainMins:30,userId:"",srm_sc5800:"15,16,17,14",srm_sc5700:"11,12,13,14",srm_sc2800:"6,7,8,9,10,5",srm_sc2700:"1,2,3,4,5"});
